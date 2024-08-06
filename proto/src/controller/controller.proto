@@ -2,18 +2,24 @@ syntax = "proto3";
 package controller;
 import "google/protobuf/empty.proto";
 
+
+// StackID stack id is unique id to stack which contains several data item
+// Usually stack no special means, you can think a stack as a tar file, files can be
+// archived into a stack, you can save img files or other any small files into a stack
+// then Bytestack will help you locate your file by index_id whihc format is "{i64},{offset}{cookie}"
+// This project inspirate by https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Beaver.pdf
+// and seaweedfs is already very very reliable blob store for small files.
 message StackID {
     uint64 stack_id = 1;
 }
 
-message StackSourceReq {
+// StackSource stores locations where the stack is.
+// locations usually are s3://xxx
+message StackSource {
     uint64 stack_id = 1;
     repeated string locations = 2;
 }
 
-message QueryRegisteredSourceResp {
-    repeated string locations = 1;
-}
 
 message CallPreLoadReq{
     uint64 stack_id = 1;
@@ -51,6 +57,7 @@ message PreLoadAssignment{
     string data_addr = 5;
 
     int64 creation_timestamp = 6;
+    string error_msg = 7;
 }
 
 message PreLoadAssignments {
@@ -62,17 +69,18 @@ service Controller {
     rpc NextStackID(google.protobuf.Empty) returns (StackID);
 
     // RegisterStackSource register stack_id to source.
-    rpc RegisterStackSource(StackSourceReq) returns (google.protobuf.Empty);
+    rpc RegisterStackSource(StackSource) returns (google.protobuf.Empty);
 
     // DeRegisterStackSource deregister source from stack_id.
-    rpc DeRegisterStackSource(StackSourceReq) returns (google.protobuf.Empty);
+    rpc DeRegisterStackSource(StackSource) returns (google.protobuf.Empty);
 
     // QueryRegisteredSource query registered source.
-    rpc QueryRegisteredSource(StackID) returns (QueryRegisteredSourceResp);
+    rpc QueryRegisteredSource(StackID) returns (StackSource);
+
+    // PreLoad help user to do preload or unpreload stack to bserver
+    rpc PreLoad(CallPreLoadReq) returns (PreLoadAssignments);
 
     // LocateStack help user find where the stack placed.
     rpc LocateStack(StackID) returns (PreLoadAssignments);
 
-    // PreLoad help user to do preload or unpreload stack to bserver
-    rpc PreLoad(CallPreLoadReq) returns (PreLoadAssignments);
 }

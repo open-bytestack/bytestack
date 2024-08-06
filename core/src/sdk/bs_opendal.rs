@@ -8,7 +8,7 @@ use log::{debug, info};
 use opendal::services::{Fs, S3};
 use opendal::{Builder, Operator};
 use proto::controller::PreLoadAssignments;
-use proto::controller::{controller_client::ControllerClient, CallPreLoadReq, StackSourceReq};
+use proto::controller::{controller_client::ControllerClient, CallPreLoadReq, StackSource};
 
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
@@ -104,7 +104,7 @@ impl BytestackOpendalHandler {
 
     /// bind_stack so that stack can be preload by bserver
     pub async fn bind_stack(&mut self, stack_id: u64, path: &str) -> Result<(), ErrorKind> {
-        let req = Request::new(StackSourceReq {
+        let req = Request::new(StackSource {
             stack_id,
             locations: vec![path.to_string()],
         });
@@ -117,7 +117,7 @@ impl BytestackOpendalHandler {
 
     /// unbind_stack so that stack can not be preload by bserver
     pub async fn unbind_stack(&mut self, stack_id: u64, path: &str) -> Result<(), ErrorKind> {
-        let req = Request::new(StackSourceReq {
+        let req = Request::new(StackSource {
             stack_id,
             locations: vec![path.to_string()],
         });

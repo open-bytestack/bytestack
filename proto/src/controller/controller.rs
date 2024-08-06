@@ -1,21 +1,23 @@
+/// StackID stack id is unique id to stack which contains several data item
+/// Usually stack no special means, you can think a stack as a tar file, files can be
+/// archived into a stack, you can save img files or other any small files into a stack
+/// then Bytestack will help you locate your file by index_id whihc format is "{i64},{offset}{cookie}"
+/// This project inspirate by <https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Beaver.pdf>
+/// and seaweedfs is already very very reliable blob store for small files.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StackId {
     #[prost(uint64, tag = "1")]
     pub stack_id: u64,
 }
+/// StackSource stores locations where the stack is.
+/// locations usually are s3://xxx
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StackSourceReq {
+pub struct StackSource {
     #[prost(uint64, tag = "1")]
     pub stack_id: u64,
     #[prost(string, repeated, tag = "2")]
-    pub locations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QueryRegisteredSourceResp {
-    #[prost(string, repeated, tag = "1")]
     pub locations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -61,6 +63,8 @@ pub struct PreLoadAssignment {
     pub data_addr: ::prost::alloc::string::String,
     #[prost(int64, tag = "6")]
     pub creation_timestamp: i64,
+    #[prost(string, tag = "7")]
+    pub error_msg: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -214,7 +218,7 @@ pub mod controller_client {
         /// RegisterStackSource register stack_id to source.
         pub async fn register_stack_source(
             &mut self,
-            request: impl tonic::IntoRequest<super::StackSourceReq>,
+            request: impl tonic::IntoRequest<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
@@ -237,7 +241,7 @@ pub mod controller_client {
         /// DeRegisterStackSource deregister source from stack_id.
         pub async fn de_register_stack_source(
             &mut self,
-            request: impl tonic::IntoRequest<super::StackSourceReq>,
+            request: impl tonic::IntoRequest<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
@@ -263,10 +267,7 @@ pub mod controller_client {
         pub async fn query_registered_source(
             &mut self,
             request: impl tonic::IntoRequest<super::StackId>,
-        ) -> std::result::Result<
-            tonic::Response<super::QueryRegisteredSourceResp>,
-            tonic::Status,
-        > {
+        ) -> std::result::Result<tonic::Response<super::StackSource>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -285,32 +286,6 @@ pub mod controller_client {
                 .insert(
                     GrpcMethod::new("controller.Controller", "QueryRegisteredSource"),
                 );
-            self.inner.unary(req, path, codec).await
-        }
-        /// LocateStack help user find where the stack placed.
-        pub async fn locate_stack(
-            &mut self,
-            request: impl tonic::IntoRequest<super::StackId>,
-        ) -> std::result::Result<
-            tonic::Response<super::PreLoadAssignments>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/controller.Controller/LocateStack",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("controller.Controller", "LocateStack"));
             self.inner.unary(req, path, codec).await
         }
         /// PreLoad help user to do preload or unpreload stack to bserver
@@ -339,6 +314,32 @@ pub mod controller_client {
                 .insert(GrpcMethod::new("controller.Controller", "PreLoad"));
             self.inner.unary(req, path, codec).await
         }
+        /// LocateStack help user find where the stack placed.
+        pub async fn locate_stack(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StackId>,
+        ) -> std::result::Result<
+            tonic::Response<super::PreLoadAssignments>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/controller.Controller/LocateStack",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("controller.Controller", "LocateStack"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -356,33 +357,30 @@ pub mod controller_server {
         /// RegisterStackSource register stack_id to source.
         async fn register_stack_source(
             &self,
-            request: tonic::Request<super::StackSourceReq>,
+            request: tonic::Request<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
         /// DeRegisterStackSource deregister source from stack_id.
         async fn de_register_stack_source(
             &self,
-            request: tonic::Request<super::StackSourceReq>,
+            request: tonic::Request<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
         /// QueryRegisteredSource query registered source.
         async fn query_registered_source(
             &self,
             request: tonic::Request<super::StackId>,
+        ) -> std::result::Result<tonic::Response<super::StackSource>, tonic::Status>;
+        /// PreLoad help user to do preload or unpreload stack to bserver
+        async fn pre_load(
+            &self,
+            request: tonic::Request<super::CallPreLoadReq>,
         ) -> std::result::Result<
-            tonic::Response<super::QueryRegisteredSourceResp>,
+            tonic::Response<super::PreLoadAssignments>,
             tonic::Status,
         >;
         /// LocateStack help user find where the stack placed.
         async fn locate_stack(
             &self,
             request: tonic::Request<super::StackId>,
-        ) -> std::result::Result<
-            tonic::Response<super::PreLoadAssignments>,
-            tonic::Status,
-        >;
-        /// PreLoad help user to do preload or unpreload stack to bserver
-        async fn pre_load(
-            &self,
-            request: tonic::Request<super::CallPreLoadReq>,
         ) -> std::result::Result<
             tonic::Response<super::PreLoadAssignments>,
             tonic::Status,
@@ -511,9 +509,7 @@ pub mod controller_server {
                 "/controller.Controller/RegisterStackSource" => {
                     #[allow(non_camel_case_types)]
                     struct RegisterStackSourceSvc<T: Controller>(pub Arc<T>);
-                    impl<
-                        T: Controller,
-                    > tonic::server::UnaryService<super::StackSourceReq>
+                    impl<T: Controller> tonic::server::UnaryService<super::StackSource>
                     for RegisterStackSourceSvc<T> {
                         type Response = ();
                         type Future = BoxFuture<
@@ -522,7 +518,7 @@ pub mod controller_server {
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::StackSourceReq>,
+                            request: tonic::Request<super::StackSource>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -557,9 +553,7 @@ pub mod controller_server {
                 "/controller.Controller/DeRegisterStackSource" => {
                     #[allow(non_camel_case_types)]
                     struct DeRegisterStackSourceSvc<T: Controller>(pub Arc<T>);
-                    impl<
-                        T: Controller,
-                    > tonic::server::UnaryService<super::StackSourceReq>
+                    impl<T: Controller> tonic::server::UnaryService<super::StackSource>
                     for DeRegisterStackSourceSvc<T> {
                         type Response = ();
                         type Future = BoxFuture<
@@ -568,7 +562,7 @@ pub mod controller_server {
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::StackSourceReq>,
+                            request: tonic::Request<super::StackSource>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -605,7 +599,7 @@ pub mod controller_server {
                     struct QueryRegisteredSourceSvc<T: Controller>(pub Arc<T>);
                     impl<T: Controller> tonic::server::UnaryService<super::StackId>
                     for QueryRegisteredSourceSvc<T> {
-                        type Response = super::QueryRegisteredSourceResp;
+                        type Response = super::StackSource;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -629,50 +623,6 @@ pub mod controller_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = QueryRegisteredSourceSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/controller.Controller/LocateStack" => {
-                    #[allow(non_camel_case_types)]
-                    struct LocateStackSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<super::StackId>
-                    for LocateStackSvc<T> {
-                        type Response = super::PreLoadAssignments;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::StackId>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).locate_stack(request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = LocateStackSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -717,6 +667,50 @@ pub mod controller_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = PreLoadSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/controller.Controller/LocateStack" => {
+                    #[allow(non_camel_case_types)]
+                    struct LocateStackSvc<T: Controller>(pub Arc<T>);
+                    impl<T: Controller> tonic::server::UnaryService<super::StackId>
+                    for LocateStackSvc<T> {
+                        type Response = super::PreLoadAssignments;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StackId>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                (*inner).locate_stack(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = LocateStackSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
