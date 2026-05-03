@@ -1,0 +1,15 @@
+[package]
+name = "bytestack-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Bytestack SDK — local directory writer for the bytestack storage format"
+keywords = ["bytestack", "haystack", "storage", "sdk"]
+
+[dependencies]
+bytestack = { workspace = true }
+tokio = { version = "1", features = ["fs", "io-util"] }
+rand = "0.8"
+bincode = "1.3"
+serde_json = "1.0"
+proto = { workspace = true }
+tonic = { workspace = true }
