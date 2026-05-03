@@ -1,6 +1,8 @@
 syntax = "proto3";
 package turbo;
 
+option go_package = "github.com/open-bytestack/bytestack/proto/src/turbo;turbo";
+
 message MaintainReq{
     // provides all kind of secrets for accessing data from source
     // please deploy this service with TLS, for not transfering in plain text.
