@@ -284,7 +284,7 @@ impl LocalWriter {
 // ---------------------------------------------------------------------------
 
 /// Obtain a fresh `stack_id` from the Controller gRPC service at `addr`.
-async fn get_stack_id_from_controller(addr: &str) -> Result<u64> {
+pub(crate) async fn get_stack_id_from_controller(addr: &str) -> Result<u64> {
     let endpoint =
         Endpoint::from_str(addr).map_err(|e| Error::Controller(e.to_string()))?;
     let mut cli = ControllerClient::connect(endpoint)

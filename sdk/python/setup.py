@@ -8,6 +8,7 @@ setup(
     install_requires=[
         "grpcio>=1.80.0",
         "protobuf>=6.0.0",
+        "boto3>=1.34.0",
     ],
     python_requires=">=3.9",
 )

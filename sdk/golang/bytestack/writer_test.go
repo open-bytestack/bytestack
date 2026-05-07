@@ -1,6 +1,7 @@
 package bytestack
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	e2e "github.com/open-bytestack/bytestack/sdk/golang/e2e"
 )
 
 func tmpDir(t *testing.T) string {
@@ -20,6 +27,131 @@ func tmpDir(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(d) })
 	return d
 }
+
+// ---------------------------------------------------------------------------
+// Path parsing
+// ---------------------------------------------------------------------------
+
+func TestParseLocation(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantScheme  string
+		wantPath    string
+		wantErr     bool
+	}{
+		{"/tmp/mystack", "file", "/tmp/mystack", false},
+		{"file:///tmp/mystack", "file", "/tmp/mystack", false},
+		{"file://./relative", "file", "./relative", false},
+		{"./relative/path", "file", "./relative/path", false},
+		{"relative/path", "file", "relative/path", false},
+		{"s3://my-bucket/prefix", "s3", "my-bucket/prefix", false},
+		{"s3://my-bucket", "s3", "my-bucket", false},
+	}
+	for _, tt := range tests {
+		scheme, path, err := parseLocation(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("parseLocation(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseLocation(%q): %v", tt.input, err)
+			continue
+		}
+		if scheme != tt.wantScheme {
+			t.Errorf("parseLocation(%q) scheme = %q, want %q", tt.input, scheme, tt.wantScheme)
+		}
+		if path != tt.wantPath {
+			t.Errorf("parseLocation(%q) path = %q, want %q", tt.input, path, tt.wantPath)
+		}
+	}
+}
+
+func TestParseS3Location(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantBucket string
+		wantPrefix string
+	}{
+		{"my-bucket/prefix/sub", "my-bucket", "prefix/sub"},
+		{"my-bucket", "my-bucket", ""},
+		{"my-bucket/", "my-bucket", ""},
+	}
+	for _, tt := range tests {
+		bucket, prefix := parseS3Location(tt.input)
+		if bucket != tt.wantBucket {
+			t.Errorf("parseS3Location(%q) bucket = %q, want %q", tt.input, bucket, tt.wantBucket)
+		}
+		if prefix != tt.wantPrefix {
+			t.Errorf("parseS3Location(%q) prefix = %q, want %q", tt.input, prefix, tt.wantPrefix)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Location prefixes
+// ---------------------------------------------------------------------------
+
+func TestOpenFilePrefix(t *testing.T) {
+	dir := tmpDir(t)
+	w, err := Open("file://" + dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Location() != "file://"+dir {
+		t.Fatalf("Location() = %q, want %q", w.Location(), "file://"+dir)
+	}
+	id, err := w.Put([]byte("hello"), "f.txt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		t.Fatal("expected non-empty index_id")
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Verify file exists on disk.
+	dataFile := filepath.Join(dir, fmt.Sprintf("0x%04x.data", w.StackID()))
+	if _, err := os.Stat(dataFile); os.IsNotExist(err) {
+		t.Fatal("data file should exist on disk")
+	}
+}
+
+func TestOpenRelativePath(t *testing.T) {
+	dir := tmpDir(t)
+	// Change to dir and open with relative path.
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+
+	w, err := Open("./mystack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Put([]byte("data"), "r.txt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Verify files in ./mystack.
+	if _, err := os.Stat("mystack"); os.IsNotExist(err) {
+		t.Fatal("mystack directory should exist")
+	}
+}
+
+func TestOpenInvalidScheme(t *testing.T) {
+	_, err := Open("ftp://example.com/path")
+	if err == nil {
+		t.Fatal("expected error for ftp:// scheme")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Local mode (backward-compatible)
+// ---------------------------------------------------------------------------
 
 func TestLocalModeHeadersUseU64Max(t *testing.T) {
 	dir := tmpDir(t)
@@ -223,5 +355,181 @@ func TestMultipleCloseIsSafe(t *testing.T) {
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal("second close should be a no-op")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LocalWriter alias backward compatibility
+// ---------------------------------------------------------------------------
+
+func TestLocalWriterAlias(t *testing.T) {
+	dir := tmpDir(t)
+	var w *LocalWriter // use the alias
+	var err error
+	w, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Put([]byte("data"), "f.txt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Location method
+// ---------------------------------------------------------------------------
+
+func TestLocationMethod(t *testing.T) {
+	dir := tmpDir(t)
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Location() != dir {
+		t.Fatalf("Location() = %q, want %q", w.Location(), dir)
+	}
+	w.Close()
+}
+
+// ---------------------------------------------------------------------------
+// S3 integration tests (using gofakes3 via e2e package)
+// ---------------------------------------------------------------------------
+
+func TestS3Writer(t *testing.T) {
+	srv, err := e2e.Start(true)
+	if err != nil {
+		t.Fatalf("e2e.Start: %v", err)
+	}
+	defer srv.Close()
+
+	endpoint := srv.S3Endpoint()
+	controllerAddr := srv.ControllerAddr()
+
+	// Restore env vars after test.
+	prevEnv := map[string]string{
+		"AWS_ACCESS_KEY_ID":     os.Getenv("AWS_ACCESS_KEY_ID"),
+		"AWS_SECRET_ACCESS_KEY": os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		"AWS_REGION":            os.Getenv("AWS_REGION"),
+		"BYTESTACK_S3_ENDPOINT": os.Getenv("BYTESTACK_S3_ENDPOINT"),
+	}
+	defer func() {
+		for k, v := range prevEnv {
+			os.Setenv(k, v)
+		}
+	}()
+	os.Setenv("AWS_ACCESS_KEY_ID", "dummy-access-key")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "dummy-secret-key")
+	os.Setenv("AWS_REGION", "us-east-1")
+	os.Setenv("BYTESTACK_S3_ENDPOINT", endpoint)
+
+	ctx := context.Background()
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-east-1"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	s3client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = true
+	})
+
+	bucket := "bst-test-bucket"
+	if _, err := s3client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucket),
+	}); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+
+	// --- Writer test -----------------------------------------------------------
+
+	w, err := Open("s3://"+bucket+"/stacks", controllerAddr)
+	if err != nil {
+		t.Fatalf("Open s3: %v", err)
+	}
+
+	id, err := w.Put([]byte("hello s3"), "greeting.txt", nil)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	t.Logf("index_id: %s", id)
+
+	id2, err := w.Put([]byte("second record"), "second.txt", []byte(`{"k":"v"}`))
+	if err != nil {
+		t.Fatalf("Put 2: %v", err)
+	}
+	t.Logf("index_id 2: %s", id2)
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// --- Verification ----------------------------------------------------------
+
+	sid := w.StackID()
+	if sid != 1 {
+		t.Errorf("expected stack_id=1 from mock controller, got %d", sid)
+	}
+
+	for _, suffix := range []string{".data", ".idx", ".meta"} {
+		key := fmt.Sprintf("stacks/0x%04x%s", sid, suffix)
+		_, err := s3client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			t.Errorf("object s3://%s/%s not found: %v", bucket, key, err)
+		}
+	}
+
+	// Put after close must fail.
+	if _, err := w.Put([]byte("late"), "late.txt", nil); err != ErrStackClosed {
+		t.Errorf("expected ErrStackClosed, got %v", err)
+	}
+
+	// Verify data and idx headers contain the real stack ID (not u64::MAX).
+	for _, suffix := range []string{".data", ".idx"} {
+		key := fmt.Sprintf("stacks/0x%04x%s", sid, suffix)
+		result, err := s3client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			t.Errorf("get %s: %v", key, err)
+			continue
+		}
+		var hdr [16]byte
+		result.Body.Read(hdr[:])
+		result.Body.Close()
+		storedID := binary.LittleEndian.Uint64(hdr[8:16])
+		if storedID != sid {
+			t.Errorf("%s header stack_id = %#x, want %#x", suffix, storedID, sid)
+		}
+	}
+
+	// Verify meta file header.
+	metaKey := fmt.Sprintf("stacks/0x%04x.meta", sid)
+	metaResult, err := s3client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(metaKey),
+	})
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	var mh metaMagicHeader
+	if err := json.NewDecoder(metaResult.Body).Decode(&mh); err != nil {
+		t.Fatalf("decode meta header: %v", err)
+	}
+	metaResult.Body.Close()
+	if mh.StackID != sid {
+		t.Errorf("meta header stack_id = %#x, want %#x", mh.StackID, sid)
+	}
+}
+
+func TestS3WithoutControllerFails(t *testing.T) {
+	_, err := Open("s3://my-bucket/my-prefix")
+	if err == nil {
+		t.Fatal("expected error for S3 without controller address")
 	}
 }

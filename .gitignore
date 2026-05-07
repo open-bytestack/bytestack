@@ -8,3 +8,4 @@
 .venv/
 sdk/python/bytestack_sdk.egg-info
 **/__pycache__/
+.deepseek/

@@ -1,5 +1,5 @@
-// Package bytestack implements a local directory writer for the Bytestack
-// storage format.
+// Package bytestack implements a directory writer for the Bytestack
+// storage format, supporting local filesystem and S3 backends.
 //
 // # Example — local mode
 //
@@ -25,6 +25,10 @@
 //
 //	w, err := bytestack.Open("/tmp/mystack", "http://localhost:8080")
 //
+// # Example — S3 mode
+//
+//	w, err := bytestack.Open("s3://my-bucket/my-prefix")
+//
 // On-disk format (.data / .idx / .meta, binary layout, CRC-32C, alignment)
 // is identical to the Rust reference implementation.
 package bytestack
@@ -40,6 +44,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -107,10 +112,28 @@ type metaRecord struct {
 }
 
 // ---------------------------------------------------------------------------
-// LocalWriter
+// stackFileWriter — abstracts a single writable file in a stack
 // ---------------------------------------------------------------------------
 
-// LocalWriter manages one bytestack on the local filesystem.
+// stackFileWriter is the interface for writing to one of the three stack
+// files (data, index, meta). Each implementation handles the underlying
+// storage backend.
+type stackFileWriter interface {
+	io.Writer
+	io.Closer
+}
+
+// stackWriterFactory creates stackFileWriter instances for a given
+// filename suffix (e.g. "0x{id}.data").
+type stackWriterFactory interface {
+	CreateWriter(filename string) (stackFileWriter, error)
+}
+
+// ---------------------------------------------------------------------------
+// Writer
+// ---------------------------------------------------------------------------
+
+// Writer manages one bytestack, storing records across three files.
 //
 // Lifecycle:
 //
@@ -118,13 +141,13 @@ type metaRecord struct {
 //	id, _ := w.Put([]byte("hello"), "greeting.txt", nil)
 //	w.Close()
 //	// w.Put(...) returns ErrStackClosed.
-type LocalWriter struct {
-	dir           string
+type Writer struct {
+	location      string // original location string
 	fileStackID   uint64
 	headerStackID uint64
-	dataFile      *os.File
-	idxFile       *os.File
-	metaFile      *os.File
+	dataFile      stackFileWriter
+	idxFile       stackFileWriter
+	metaFile      stackFileWriter
 	dataOffset    uint64
 	metaOffset    uint64
 	totalRawBytes int
@@ -132,25 +155,91 @@ type LocalWriter struct {
 	closed        bool
 }
 
-// Open creates or opens a stack inside dir.
+// LocalWriter is an alias for Writer for backward compatibility.
+type LocalWriter = Writer
+
+// Open creates or opens a stack at the given location.
 //
-// controllerAddr is optional. When provided (e.g. "http://localhost:8080"),
-// the stack_id is obtained from the Controller gRPC service. In local mode
-// (no controller) the file naming uses the current Unix timestamp and binary
-// headers carry u64::MAX.
-func Open(dir string, controllerAddr ...string) (*LocalWriter, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+// Location prefixes:
+//   - "/absolute/path"  → local filesystem
+//   - "file:///path"     → local filesystem
+//   - "./relative/path"  → local filesystem
+//   - "s3://bucket/prefix" → S3 (requires AWS credentials in the environment
+//     or ~/.aws/config; configure region via AWS_REGION, endpoint via
+//     BYTESTACK_S3_ENDPOINT for MinIO-compatible stores)
+//
+// Optional controllerAddr enables controller-gRPC mode for stack-id
+// assignment.
+func Open(location string, controllerAddr ...string) (*Writer, error) {
+	scheme, path, err := parseLocation(location)
+	if err != nil {
+		return nil, err
 	}
 
-	w := &LocalWriter{
-		dir:          dir,
+	addr := ""
+	if len(controllerAddr) > 0 {
+		addr = controllerAddr[0]
+	}
+
+	var factory stackWriterFactory
+	switch scheme {
+	case "file":
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", path, err)
+		}
+		factory = &localWriterFactory{dir: path}
+	case "s3":
+		if addr == "" {
+			return nil, fmt.Errorf("s3 backend requires a controller address for stack-id assignment; s3:// stacks cannot use temporary local IDs")
+		}
+		bucket, prefix := parseS3Location(path)
+		factory, err = newS3WriterFactory(bucket, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("s3: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported location scheme %q in %q (use /path, file://path, or s3://bucket/prefix)", scheme, location)
+	}
+
+	return newWriter(location, factory, addr)
+}
+
+// parseLocation extracts scheme and path from a location string.
+func parseLocation(location string) (scheme, path string, err error) {
+	if strings.HasPrefix(location, "file://") {
+		return "file", location[7:], nil
+	}
+	if strings.HasPrefix(location, "s3://") {
+		return "s3", location[5:], nil
+	}
+	// Absolute path or relative path — treat as local.
+	if !strings.Contains(location, "://") {
+		return "file", location, nil
+	}
+	return "", "", fmt.Errorf("cannot parse location: %s", location)
+}
+
+// parseS3Location splits "bucket/prefix" into bucket and prefix.
+func parseS3Location(s3path string) (bucket, prefix string) {
+	parts := strings.SplitN(s3path, "/", 2)
+	bucket = parts[0]
+	if len(parts) == 2 {
+		prefix = parts[1]
+	}
+	return
+}
+
+// newWriter creates a Writer using the given factory and optional
+// controller address.
+func newWriter(location string, factory stackWriterFactory, controllerAddr string) (*Writer, error) {
+	w := &Writer{
+		location:     location,
 		maxDataBytes: DefaultMaxDataBytes,
 	}
 
 	// Resolve stack ID -------------------------------------------------------
-	if len(controllerAddr) > 0 && controllerAddr[0] != "" {
-		sid, err := nextStackID(controllerAddr[0])
+	if controllerAddr != "" {
+		sid, err := nextStackID(controllerAddr)
 		if err != nil {
 			return nil, err
 		}
@@ -161,21 +250,17 @@ func Open(dir string, controllerAddr ...string) (*LocalWriter, error) {
 		w.headerStackID = LocalStackID
 	}
 
-	// Create files ----------------------------------------------------------
-	dataPath := filepath.Join(dir, fmt.Sprintf("0x%04x.data", w.fileStackID))
-	idxPath := filepath.Join(dir, fmt.Sprintf("0x%04x.idx", w.fileStackID))
-	metaPath := filepath.Join(dir, fmt.Sprintf("0x%04x.meta", w.fileStackID))
-
+	// Create files via factory -----------------------------------------------
 	var err error
-	w.dataFile, err = os.Create(dataPath)
+	w.dataFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.data", w.fileStackID))
 	if err != nil {
 		return nil, fmt.Errorf("create data: %w", err)
 	}
-	w.idxFile, err = os.Create(idxPath)
+	w.idxFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.idx", w.fileStackID))
 	if err != nil {
 		return nil, fmt.Errorf("create idx: %w", err)
 	}
-	w.metaFile, err = os.Create(metaPath)
+	w.metaFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.meta", w.fileStackID))
 	if err != nil {
 		return nil, fmt.Errorf("create meta: %w", err)
 	}
@@ -221,26 +306,26 @@ func Open(dir string, controllerAddr ...string) (*LocalWriter, error) {
 // StackID returns the stack identifier used for file naming
 // (0x{stack_id}.{suffix}). In local mode this is a Unix timestamp;
 // in controller mode it is the real stack_id.
-func (w *LocalWriter) StackID() uint64 { return w.fileStackID }
+func (w *Writer) StackID() uint64 { return w.fileStackID }
 
 // HeaderStackID returns the stack identifier written into binary headers.
 // In local mode this is u64::MAX; in controller mode it equals StackID().
-func (w *LocalWriter) HeaderStackID() uint64 { return w.headerStackID }
+func (w *Writer) HeaderStackID() uint64 { return w.headerStackID }
 
-// Dir returns the local directory path.
-func (w *LocalWriter) Dir() string { return w.dir }
+// Location returns the location string passed to Open.
+func (w *Writer) Location() string { return w.location }
 
 // MaxDataBytes returns the maximum raw payload bytes allowed before rotation.
-func (w *LocalWriter) MaxDataBytes() int { return w.maxDataBytes }
+func (w *Writer) MaxDataBytes() int { return w.maxDataBytes }
 
 // TotalRawBytes returns the raw payload bytes written so far.
-func (w *LocalWriter) TotalRawBytes() int { return w.totalRawBytes }
+func (w *Writer) TotalRawBytes() int { return w.totalRawBytes }
 
 // Put writes one record into the stack and returns an index_id.
 //
 // extraMeta is an opaque byte blob stored in the meta record
 // (e.g. a JSON or protobuf encoding). Pass nil when no metadata is needed.
-func (w *LocalWriter) Put(data []byte, filename string, extraMeta []byte) (string, error) {
+func (w *Writer) Put(data []byte, filename string, extraMeta []byte) (string, error) {
 	if w.closed {
 		return "", ErrStackClosed
 	}
@@ -335,24 +420,53 @@ func (w *LocalWriter) Put(data []byte, filename string, extraMeta []byte) (strin
 //
 // After this call any further Put() returns ErrStackClosed.
 // Calling Close() multiple times is safe (subsequent calls are no-ops).
-func (w *LocalWriter) Close() error {
+func (w *Writer) Close() error {
 	if w.closed {
 		return nil
 	}
 	w.closed = true
 
-	for _, f := range []*os.File{w.dataFile, w.idxFile, w.metaFile} {
+	for _, f := range []stackFileWriter{w.dataFile, w.idxFile, w.metaFile} {
 		if f == nil {
 			continue
-		}
-		if err := f.Sync(); err != nil {
-			return fmt.Errorf("sync: %w", err)
 		}
 		if err := f.Close(); err != nil {
 			return fmt.Errorf("close: %w", err)
 		}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// local writer factory
+// ---------------------------------------------------------------------------
+
+type localWriterFactory struct {
+	dir string
+}
+
+func (f *localWriterFactory) CreateWriter(filename string) (stackFileWriter, error) {
+	path := filepath.Join(f.dir, filename)
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	return &localFileWriter{file: file}, nil
+}
+
+type localFileWriter struct {
+	file *os.File
+}
+
+func (w *localFileWriter) Write(p []byte) (int, error) {
+	return w.file.Write(p)
+}
+
+func (w *localFileWriter) Close() error {
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	return w.file.Close()
 }
 
 // ---------------------------------------------------------------------------
@@ -383,4 +497,4 @@ func nextStackID(addr string) (uint64, error) {
 // io helpers (verification — ensure the type implements io.Closer)
 // ---------------------------------------------------------------------------
 
-var _ io.Closer = (*LocalWriter)(nil)
+var _ io.Closer = (*Writer)(nil)

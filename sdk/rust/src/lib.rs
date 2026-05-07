@@ -45,5 +45,7 @@
 
 pub mod error;
 pub mod writer;
+pub mod writer_s3;
 
 pub use writer::LocalWriter;
+pub use writer_s3::S3Writer;
