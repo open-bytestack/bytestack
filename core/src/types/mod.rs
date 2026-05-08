@@ -1,8 +1,8 @@
 //! types hold all types about data, index, meta
 pub mod data;
 pub use data::DataMagicHeader;
-pub use data::DataRecordHeader;
 pub use data::DataRecord;
+pub use data::DataRecordHeader;
 
 pub mod index;
 pub use index::IndexMagicHeader;

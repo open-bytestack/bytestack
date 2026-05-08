@@ -2,6 +2,7 @@ syntax = "proto3";
 package controller;
 import "google/protobuf/empty.proto";
 
+option go_package = "github.com/open-bytestack/bytestack/proto/src/controller;controller";
 
 // StackID stack id is unique id to stack which contains several data item
 // Usually stack no special means, you can think a stack as a tar file, files can be

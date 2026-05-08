@@ -9,6 +9,7 @@ members = [
   "bin/bst",
   "services/controller",
   "services/turbo",
+  "sdk/rust",
   "examples/write-and-read"
 ]
 resolver = "1"

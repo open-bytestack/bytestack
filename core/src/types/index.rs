@@ -44,7 +44,7 @@ pub struct IndexRecord {
     pub cookie: u32,
     /// offset_data is offset of corresponding data in data file
     pub offset_data: u64,
-    /// size_data is size of corresponding data in data file 
+    /// size_data is size of corresponding data in data file
     pub size_data: u32,
     /// offset_meta is offset of corresponding meta in meta file
     pub offset_meta: u64,

@@ -1,0 +1,71 @@
+name: SDK Rust
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-rust.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "sdk/rust/**"
+      - "sdk/golang/e2e/**"
+      - "core/**"
+      - "proto/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-rust.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "sdk/rust/**"
+      - "sdk/golang/e2e/**"
+      - "core/**"
+      - "proto/**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Run Rust SDK unit tests
+        run: cargo test -p bytestack-sdk --lib --verbose
+
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build e2e server
+        run: go build -o /tmp/e2e-server ./sdk/golang/e2e/cmd/e2e
+
+      - name: Run Rust SDK S3 integration test
+        env:
+          E2E_BIN: /tmp/e2e-server
+        run: cargo test -p bytestack-sdk --test s3_integration_test -- --nocapture
