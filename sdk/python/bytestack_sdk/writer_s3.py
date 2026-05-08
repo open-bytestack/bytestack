@@ -81,6 +81,7 @@ class S3Writer:
     def __init__(self) -> None:
         self._bucket: str = ""
         self._prefix: str = ""
+        self._controller: str = ""
         self._file_stack_id: int = 0
         self._header_stack_id: int = 0
         self._data_buf: Optional[io.BytesIO] = None
@@ -125,42 +126,63 @@ class S3Writer:
         w = cls()
         w._bucket = bucket
         w._prefix = prefix
-
-        # Resolve stack ID (S3 mode requires a controller).
-        w._header_stack_id = w._file_stack_id = _next_stack_id(controller)
+        w._controller = controller
         w._max_data_bytes = MAX_DATA_BYTES
+        # Create S3 client (lazy — actual network use is in close()).
+        w._s3_client = _create_s3_client()
+        w._open_stack()
+        return w
 
-        # Create in-memory buffers.
-        w._data_buf = io.BytesIO()
-        w._idx_buf = io.BytesIO()
-        w._meta_buf = io.BytesIO()
+    def _open_stack(self) -> None:
+        sid = _next_stack_id(self._controller)
+        self._file_stack_id = sid
+        self._header_stack_id = sid
+        self._data_offset = DATA_HEADER_SIZE
+        self._meta_offset = 0
+        self._total_raw_bytes = 0
+        self._data_buf = io.BytesIO()
+        self._idx_buf = io.BytesIO()
+        self._meta_buf = io.BytesIO()
 
-        # --- Magic headers --------------------------------------------------
-
-        # Data file: 16-byte magic header + 4080 bytes zero padding.
-        dh = struct.pack(_DATA_MAGIC_FMT, DATA_MAGIC, w._header_stack_id)
+        dh = struct.pack(_DATA_MAGIC_FMT, DATA_MAGIC, self._header_stack_id)
         assert len(dh) == 16
-        w._data_buf.write(dh)
-        w._data_buf.write(b"\x00" * (DATA_HEADER_SIZE - 16))
+        self._data_buf.write(dh)
+        self._data_buf.write(b"\x00" * (DATA_HEADER_SIZE - 16))
 
-        # Index file: 16-byte magic header.
-        ih = struct.pack(_INDEX_MAGIC_FMT, INDEX_MAGIC, w._header_stack_id)
+        ih = struct.pack(_INDEX_MAGIC_FMT, INDEX_MAGIC, self._header_stack_id)
         assert len(ih) == 16
-        w._idx_buf.write(ih)
+        self._idx_buf.write(ih)
 
-        # Meta file: JSON magic header + newline.
         mh = json.dumps(
-            {"meta_magic_number": META_MAGIC, "stack_id": w._header_stack_id},
+            {"meta_magic_number": META_MAGIC, "stack_id": self._header_stack_id},
             separators=(",", ":"),
         )
         mh_line = (mh + "\n").encode("utf-8")
-        w._meta_buf.write(mh_line)
-        w._meta_offset = len(mh_line)
+        self._meta_buf.write(mh_line)
+        self._meta_offset = len(mh_line)
 
-        # Create S3 client (lazy — actual network use is in close()).
-        w._s3_client = _create_s3_client()
+    def _upload_current_stack(self) -> None:
+        if self._s3_client is None:
+            return
 
-        return w
+        sid = self._file_stack_id
+        for suffix, buf in (("data", self._data_buf), ("meta", self._meta_buf), ("idx", self._idx_buf)):
+            if buf is None:
+                continue
+            key = _format_path(sid, suffix)
+            if self._prefix:
+                key = self._prefix + "/" + key
+            buf.seek(0)
+            self._s3_client.put_object(Bucket=self._bucket, Key=key, Body=buf)
+            buf.close()
+
+        self._data_buf = None
+        self._idx_buf = None
+        self._meta_buf = None
+
+    def _rotate_stack(self) -> None:
+        self._upload_current_stack()
+        self._open_stack()
 
     # -- properties ----------------------------------------------------------
 
@@ -222,9 +244,17 @@ class S3Writer:
             raise StackClosed()
 
         # --- Size guard -----------------------------------------------------
+        if len(data) > self._max_data_bytes:
+            raise StackFull(len(data), self._max_data_bytes)
+
         new_total = self._total_raw_bytes + len(data)
         if new_total > self._max_data_bytes:
-            raise StackFull(new_total, self._max_data_bytes)
+            self._rotate_stack()
+            data_buf = self._data_buf
+            idx_buf = self._idx_buf
+            meta_buf = self._meta_buf
+            if data_buf is None or idx_buf is None or meta_buf is None:
+                raise StackClosed()
 
         # --- Build records --------------------------------------------------
         cookie = secrets.randbits(32)
@@ -274,15 +304,17 @@ class S3Writer:
         raw_bytes = DATA_RECORD_HEADER_SIZE + len(data)
         padding_size = (ALIGNMENT - (raw_bytes % ALIGNMENT)) % ALIGNMENT
 
-        # --- Write order: index → meta → data -----------------------------
-        idx_buf.write(ir_bytes)
-        meta_buf.write(mr_line)
-        self._meta_offset += mr_line_len
+        # --- Write order: data → meta → idx -------------------------------
         data_buf.write(dr_header)
         data_buf.write(data)
         if padding_size:
             data_buf.write(b"\x00" * padding_size)
         self._data_offset += raw_bytes + padding_size
+
+        meta_buf.write(mr_line)
+        self._meta_offset += mr_line_len
+
+        idx_buf.write(ir_bytes)
 
         self._total_raw_bytes += len(data)
         return index_id
@@ -298,28 +330,8 @@ class S3Writer:
         if self._s3_client is None:
             return
 
-        data_buf = self._data_buf
-        idx_buf = self._idx_buf
-        meta_buf = self._meta_buf
-
-        self._data_buf = None
-        self._idx_buf = None
-        self._meta_buf = None
-
-        client = self._s3_client
+        self._upload_current_stack()
         self._s3_client = None
-
-        # Upload each buffer to S3.
-        sid = self._file_stack_id
-        for suffix, buf in (("data", data_buf), ("idx", idx_buf), ("meta", meta_buf)):
-            if buf is None:
-                continue
-            key = _format_path(sid, suffix)
-            if self._prefix:
-                key = self._prefix + "/" + key
-            buf.seek(0)
-            client.put_object(Bucket=self._bucket, Key=key, Body=buf)
-            buf.close()
 
 
 # ---------------------------------------------------------------------------

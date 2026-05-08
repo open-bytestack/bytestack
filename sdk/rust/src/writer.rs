@@ -55,6 +55,7 @@ const DEFAULT_MAX_DATA_BYTES: usize = 5 * 1024 * 1024 * 1024;
 /// ```
 pub struct LocalWriter {
     dir: PathBuf,
+    controller: Option<String>,
     /// Stack identifier used for **file naming**.
     file_stack_id: u64,
     /// Stack identifier written into binary headers (`u64::MAX` in local mode).
@@ -78,64 +79,108 @@ impl LocalWriter {
         let dir = path.as_ref().to_path_buf();
         tokio::fs::create_dir_all(&dir).await?;
 
-        let (file_stack_id, header_stack_id) = match controller {
+        let mut writer = Self {
+            dir,
+            controller: controller.map(ToOwned::to_owned),
+            file_stack_id: 0,
+            header_stack_id: 0,
+            data_file: None,
+            idx_file: None,
+            meta_file: None,
+            data_offset: 4096u64,
+            meta_offset: 0,
+            total_raw_bytes: 0,
+            max_data_bytes: DEFAULT_MAX_DATA_BYTES,
+        };
+        writer.open_stack().await?;
+        Ok(writer)
+    }
+
+    async fn resolve_stack_ids(&self) -> Result<(u64, u64)> {
+        match self.controller.as_deref() {
             Some(addr) => {
                 let sid = get_stack_id_from_controller(addr).await?;
-                (sid, sid)
+                Ok((sid, sid))
             }
             None => {
-                let ts = std::time::SystemTime::now()
+                let mut ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
                     .as_secs();
-                (ts, LOCAL_STACK_ID)
+                loop {
+                    let path = self.dir.join(format!("0x{:04x}.data", ts));
+                    if !tokio::fs::try_exists(&path).await? {
+                        return Ok((ts, LOCAL_STACK_ID));
+                    }
+                    ts += 1;
+                }
             }
-        };
+        }
+    }
 
-        let max_data_bytes = DEFAULT_MAX_DATA_BYTES;
+    async fn open_stack(&mut self) -> Result<()> {
+        let (file_stack_id, header_stack_id) = self.resolve_stack_ids().await?;
+        let data_path = self.dir.join(format!("0x{:04x}.data", file_stack_id));
+        let idx_path = self.dir.join(format!("0x{:04x}.idx", file_stack_id));
+        let meta_path = self.dir.join(format!("0x{:04x}.meta", file_stack_id));
 
-        let data_path = dir.join(format!("0x{:04x}.data", file_stack_id));
-        let idx_path = dir.join(format!("0x{:04x}.idx", file_stack_id));
-        let meta_path = dir.join(format!("0x{:04x}.meta", file_stack_id));
+        let mut data_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&data_path)
+            .await?;
+        let mut idx_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&idx_path)
+            .await?;
+        let mut meta_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&meta_path)
+            .await?;
 
-        let mut data_file = tokio::fs::File::create(&data_path).await?;
-        let mut idx_file = tokio::fs::File::create(&idx_path).await?;
-        let mut meta_file = tokio::fs::File::create(&meta_path).await?;
-
-        // --- Write magic headers ----------------------------------------
-
-        // Data file: 16-byte DataMagicHeader (bincode) + 4080 zero padding.
         let dh_bytes = bincode::serialize(&DataMagicHeader::new(header_stack_id))
             .map_err(|e| Error::Serialize(e.to_string()))?;
         debug_assert_eq!(dh_bytes.len(), 16);
         data_file.write_all(&dh_bytes).await?;
         data_file.write_all(&[0u8; 4080]).await?;
 
-        // Index file: 16-byte IndexMagicHeader (bincode).
         let ih_bytes = bincode::serialize(&IndexMagicHeader::new(header_stack_id))
             .map_err(|e| Error::Serialize(e.to_string()))?;
         debug_assert_eq!(ih_bytes.len(), 16);
         idx_file.write_all(&ih_bytes).await?;
 
-        // Meta file: JSON MetaMagicHeader + newline.
         let mh_str = serde_json::to_string(&MetaMagicHeader::new(header_stack_id))
             .map_err(|e| Error::Serialize(e.to_string()))?;
         let mh_line = format!("{}\n", mh_str);
-        let mh_len = mh_line.len();
         meta_file.write_all(mh_line.as_bytes()).await?;
 
-        Ok(Self {
-            dir,
-            file_stack_id,
-            header_stack_id,
-            data_file: Some(data_file),
-            idx_file: Some(idx_file),
-            meta_file: Some(meta_file),
-            data_offset: 4096u64,
-            meta_offset: mh_len as u64,
-            total_raw_bytes: 0,
-            max_data_bytes,
-        })
+        self.file_stack_id = file_stack_id;
+        self.header_stack_id = header_stack_id;
+        self.data_file = Some(data_file);
+        self.idx_file = Some(idx_file);
+        self.meta_file = Some(meta_file);
+        self.data_offset = 4096;
+        self.meta_offset = mh_line.len() as u64;
+        self.total_raw_bytes = 0;
+        Ok(())
+    }
+
+    async fn rotate_stack(&mut self) -> Result<()> {
+        Self::flush_and_close(&mut self.data_file).await?;
+        Self::flush_and_close(&mut self.meta_file).await?;
+        Self::flush_and_close(&mut self.idx_file).await?;
+        self.open_stack().await
+    }
+
+    async fn flush_and_close(f: &mut Option<tokio::fs::File>) -> Result<()> {
+        if let Some(file) = f.as_mut() {
+            file.flush().await?;
+            file.sync_all().await?;
+        }
+        f.take();
+        Ok(())
     }
 
     /// The stack identifier used for **file naming** (`0x{stack_id}.{suffix}`).
@@ -180,18 +225,26 @@ impl LocalWriter {
         filename: impl Into<String>,
         extra_meta: Option<Vec<u8>>,
     ) -> Result<String> {
-        let data_file = self.data_file.as_mut().ok_or(Error::StackClosed)?;
-        let idx_file = self.idx_file.as_mut().ok_or(Error::StackClosed)?;
-        let meta_file = self.meta_file.as_mut().ok_or(Error::StackClosed)?;
+        if self.data_file.is_none() || self.idx_file.is_none() || self.meta_file.is_none() {
+            return Err(Error::StackClosed);
+        }
 
         // --- Size guard ------------------------------------------------
-        let new_total = self.total_raw_bytes + data.len();
-        if new_total > self.max_data_bytes {
+        if data.len() > self.max_data_bytes {
             return Err(Error::StackFull {
-                current: new_total,
+                current: data.len(),
                 max: self.max_data_bytes,
             });
         }
+
+        let new_total = self.total_raw_bytes + data.len();
+        if new_total > self.max_data_bytes {
+            self.rotate_stack().await?;
+        }
+
+        let data_file = self.data_file.as_mut().ok_or(Error::StackClosed)?;
+        let idx_file = self.idx_file.as_mut().ok_or(Error::StackClosed)?;
+        let meta_file = self.meta_file.as_mut().ok_or(Error::StackClosed)?;
 
         // --- Build records ---------------------------------------------
         let filename = filename.into();
@@ -209,8 +262,7 @@ impl LocalWriter {
             filename,
             extra,
         );
-        let mr_json =
-            serde_json::to_vec(&mr).map_err(|e| Error::Serialize(e.to_string()))?;
+        let mr_json = serde_json::to_vec(&mr).map_err(|e| Error::Serialize(e.to_string()))?;
         let mr_line_len = mr_json.len() + 1; // +1 for trailing newline
 
         // IndexRecord uses bincode (fixed-size, 28 bytes).
@@ -226,30 +278,28 @@ impl LocalWriter {
         // DataRecord handles alignment internally.
         let dr = DataRecord::new(cookie, data.len() as u32, crc32c, data);
 
-        // --- Write order: index → meta → data --------------------------
-        // NOTE: matches the reference implementation for on-disk
-        // compatibility.  A future revision should reorder to data-first
-        // for crash-safety.
-
-        // 1. Index record.
-        let ir_bytes =
-            bincode::serialize(&ir).map_err(|e| Error::Serialize(e.to_string()))?;
-        debug_assert_eq!(ir_bytes.len(), 28);
-        idx_file.write_all(&ir_bytes).await?;
-
-        // 2. Meta record (JSON + newline).
-        meta_file.write_all(&mr_json).await?;
-        meta_file.write_all(b"\n").await?;
-        self.meta_offset += mr_line_len as u64;
-
-        // 3. Data record (header + payload + padding).
+        // --- Write order: data → flush → meta → idx --------------------
         let dr_header_bytes =
             bincode::serialize(&dr.header).map_err(|e| Error::Serialize(e.to_string()))?;
         debug_assert_eq!(dr_header_bytes.len(), 20);
         data_file.write_all(&dr_header_bytes).await?;
         data_file.write_all(&dr.data).await?;
         data_file.write_all(&dr.padding).await?;
+        data_file.flush().await?;
+        data_file.sync_all().await?;
         self.data_offset += dr.size() as u64;
+
+        meta_file.write_all(&mr_json).await?;
+        meta_file.write_all(b"\n").await?;
+        meta_file.flush().await?;
+        meta_file.sync_all().await?;
+        self.meta_offset += mr_line_len as u64;
+
+        let ir_bytes = bincode::serialize(&ir).map_err(|e| Error::Serialize(e.to_string()))?;
+        debug_assert_eq!(ir_bytes.len(), 28);
+        idx_file.write_all(&ir_bytes).await?;
+        idx_file.flush().await?;
+        idx_file.sync_all().await?;
 
         self.total_raw_bytes += dr.data.len();
 
@@ -262,18 +312,9 @@ impl LocalWriter {
     /// [`Error::StackClosed`].  Calling `close()` multiple times is safe (the
     /// second call is a no-op).
     pub async fn close(&mut self) -> Result<()> {
-        async fn flush_and_close(f: &mut Option<tokio::fs::File>) -> Result<()> {
-            if let Some(file) = f.as_mut() {
-                file.flush().await?;
-                file.sync_all().await?;
-            }
-            f.take();
-            Ok(())
-        }
-
-        flush_and_close(&mut self.data_file).await?;
-        flush_and_close(&mut self.idx_file).await?;
-        flush_and_close(&mut self.meta_file).await?;
+        Self::flush_and_close(&mut self.data_file).await?;
+        Self::flush_and_close(&mut self.meta_file).await?;
+        Self::flush_and_close(&mut self.idx_file).await?;
 
         Ok(())
     }
@@ -285,8 +326,7 @@ impl LocalWriter {
 
 /// Obtain a fresh `stack_id` from the Controller gRPC service at `addr`.
 pub(crate) async fn get_stack_id_from_controller(addr: &str) -> Result<u64> {
-    let endpoint =
-        Endpoint::from_str(addr).map_err(|e| Error::Controller(e.to_string()))?;
+    let endpoint = Endpoint::from_str(addr).map_err(|e| Error::Controller(e.to_string()))?;
     let mut cli = ControllerClient::connect(endpoint)
         .await
         .map_err(|e| Error::Controller(e.to_string()))?;
@@ -307,8 +347,7 @@ mod tests {
     use super::*;
 
     fn tmpdir() -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("bst_sdk_test_{}", rand::random::<u64>()));
+        let dir = std::env::temp_dir().join(format!("bst_sdk_test_{}", rand::random::<u64>()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -393,9 +432,14 @@ mod tests {
 
         let large = vec![0u8; 90];
         w.put(large, "large.txt", None).await.unwrap();
+        let first_stack_id = w.stack_id();
 
         let overflow = vec![0u8; 20];
-        let result = w.put(overflow, "overflow.txt", None).await;
+        w.put(overflow, "overflow.txt", None).await.unwrap();
+        assert_ne!(w.stack_id(), first_stack_id);
+
+        let oversized = vec![0u8; 200];
+        let result = w.put(oversized, "too-large.txt", None).await;
         assert!(matches!(result, Err(Error::StackFull { .. })));
 
         w.close().await.unwrap();

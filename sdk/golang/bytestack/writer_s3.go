@@ -123,6 +123,10 @@ func (w *s3FileWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
+func (w *s3FileWriter) Sync() error {
+	return nil
+}
+
 func (w *s3FileWriter) Close() error {
 	if w.closed {
 		return nil

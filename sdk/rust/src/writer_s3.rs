@@ -51,6 +51,7 @@ const DEFAULT_MAX_DATA_BYTES: usize = 5 * 1024 * 1024 * 1024;
 pub struct S3Writer {
     bucket: String,
     prefix: String,
+    controller: String,
     file_stack_id: u64,
     header_stack_id: u64,
     data_buf: Vec<u8>,
@@ -71,7 +72,7 @@ impl S3Writer {
     /// * `controller` — gRPC address of the Controller service (required).
     pub async fn open(location: &str, controller: &str) -> Result<Self> {
         if !location.starts_with("s3://") {
-            return Err(Error::InvalidStack(format!(
+            return Err(Error::Internal(format!(
                 "S3Writer requires an s3:// location, got {:?}",
                 location
             )));
@@ -83,53 +84,97 @@ impl S3Writer {
             None => (s3_path.to_string(), String::new()),
         };
 
-        // Resolve stack ID (controller is required for S3 mode).
-        let sid = get_stack_id_from_controller(controller).await?;
-
-        let mut data_buf = Vec::new();
-        let mut idx_buf = Vec::new();
-        let mut meta_buf = Vec::new();
-
-        // --- Magic headers --------------------------------------------------
-
-        // Data file: 16-byte DataMagicHeader (bincode) + 4080 zero padding.
-        let dh_bytes = bincode::serialize(&DataMagicHeader::new(sid))
-            .map_err(|e| Error::Serialize(e.to_string()))?;
-        debug_assert_eq!(dh_bytes.len(), 16);
-        data_buf.extend_from_slice(&dh_bytes);
-        data_buf.extend_from_slice(&[0u8; 4080]);
-
-        // Index file: 16-byte IndexMagicHeader (bincode).
-        let ih_bytes = bincode::serialize(&IndexMagicHeader::new(sid))
-            .map_err(|e| Error::Serialize(e.to_string()))?;
-        debug_assert_eq!(ih_bytes.len(), 16);
-        idx_buf.extend_from_slice(&ih_bytes);
-
-        // Meta file: JSON MetaMagicHeader + newline.
-        let mh_str = serde_json::to_string(&MetaMagicHeader::new(sid))
-            .map_err(|e| Error::Serialize(e.to_string()))?;
-        let mh_line = format!("{}\n", mh_str);
-        let mh_len = mh_line.len();
-        meta_buf.extend_from_slice(mh_line.as_bytes());
-
-        // Create S3 client.
-        let s3_client = create_s3_client().await;
-
-        Ok(Self {
+        let mut writer = Self {
             bucket,
             prefix,
-            file_stack_id: sid,
-            header_stack_id: sid,
-            data_buf,
-            idx_buf,
-            meta_buf,
+            controller: controller.to_string(),
+            file_stack_id: 0,
+            header_stack_id: 0,
+            data_buf: Vec::new(),
+            idx_buf: Vec::new(),
+            meta_buf: Vec::new(),
             data_offset: 4096,
-            meta_offset: mh_len as u64,
+            meta_offset: 0,
             total_raw_bytes: 0,
             max_data_bytes: DEFAULT_MAX_DATA_BYTES,
             closed: false,
-            s3_client: Some(s3_client),
-        })
+            s3_client: Some(create_s3_client().await),
+        };
+        writer.open_stack().await?;
+        Ok(writer)
+    }
+
+    async fn open_stack(&mut self) -> Result<()> {
+        let sid = get_stack_id_from_controller(&self.controller).await?;
+        self.file_stack_id = sid;
+        self.header_stack_id = sid;
+        self.data_offset = 4096;
+        self.total_raw_bytes = 0;
+        self.data_buf.clear();
+        self.idx_buf.clear();
+        self.meta_buf.clear();
+
+        let dh_bytes = bincode::serialize(&DataMagicHeader::new(sid))
+            .map_err(|e| Error::Serialize(e.to_string()))?;
+        debug_assert_eq!(dh_bytes.len(), 16);
+        self.data_buf.extend_from_slice(&dh_bytes);
+        self.data_buf.extend_from_slice(&[0u8; 4080]);
+
+        let ih_bytes = bincode::serialize(&IndexMagicHeader::new(sid))
+            .map_err(|e| Error::Serialize(e.to_string()))?;
+        debug_assert_eq!(ih_bytes.len(), 16);
+        self.idx_buf.extend_from_slice(&ih_bytes);
+
+        let mh_str = serde_json::to_string(&MetaMagicHeader::new(sid))
+            .map_err(|e| Error::Serialize(e.to_string()))?;
+        let mh_line = format!("{}\n", mh_str);
+        self.meta_offset = mh_line.len() as u64;
+        self.meta_buf.extend_from_slice(mh_line.as_bytes());
+        Ok(())
+    }
+
+    async fn upload_current_stack(&mut self) -> Result<()> {
+        let client = self
+            .s3_client
+            .as_ref()
+            .ok_or_else(|| Error::Internal("missing s3 client".to_string()))?;
+        let sid = self.file_stack_id;
+        let objects: [(&str, &Vec<u8>); 3] = [
+            ("data", &self.data_buf),
+            ("meta", &self.meta_buf),
+            ("idx", &self.idx_buf),
+        ];
+
+        for (suffix, buf) in objects {
+            let key = if self.prefix.is_empty() {
+                format!("0x{:04x}.{}", sid, suffix)
+            } else {
+                format!("{}/0x{:04x}.{}", self.prefix, sid, suffix)
+            };
+            client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(&key)
+                .body(ByteStream::from(buf.clone()))
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
+        }
+
+        self.data_buf.clear();
+        self.meta_buf.clear();
+        self.idx_buf.clear();
+        Ok(())
+    }
+
+    async fn rotate_stack(&mut self) -> Result<()> {
+        self.upload_current_stack().await?;
+        self.open_stack().await
     }
 
     /// The stack identifier used for **file naming**.
@@ -176,12 +221,16 @@ impl S3Writer {
         }
 
         // --- Size guard ----------------------------------------------------
-        let new_total = self.total_raw_bytes + data.len();
-        if new_total > self.max_data_bytes {
+        if data.len() > self.max_data_bytes {
             return Err(Error::StackFull {
-                current: new_total,
+                current: data.len(),
                 max: self.max_data_bytes,
             });
+        }
+
+        let new_total = self.total_raw_bytes + data.len();
+        if new_total > self.max_data_bytes {
+            self.rotate_stack().await?;
         }
 
         // --- Build records -------------------------------------------------
@@ -200,8 +249,7 @@ impl S3Writer {
             filename,
             extra,
         );
-        let mr_json =
-            serde_json::to_vec(&mr).map_err(|e| Error::Serialize(e.to_string()))?;
+        let mr_json = serde_json::to_vec(&mr).map_err(|e| Error::Serialize(e.to_string()))?;
         let mr_line_len = mr_json.len() + 1; // +1 for trailing newline
 
         // IndexRecord uses bincode (fixed-size, 28 bytes).
@@ -217,22 +265,22 @@ impl S3Writer {
         // DataRecord handles alignment internally.
         let dr = DataRecord::new(cookie, data.len() as u32, crc32c, data);
 
-        // --- Write order: index → meta → data -----------------------------
-        let ir_bytes = bincode::serialize(&ir).map_err(|e| Error::Serialize(e.to_string()))?;
-        debug_assert_eq!(ir_bytes.len(), 28);
-        self.idx_buf.extend_from_slice(&ir_bytes);
-
-        self.meta_buf.extend_from_slice(&mr_json);
-        self.meta_buf.extend_from_slice(b"\n");
-        self.meta_offset += mr_line_len as u64;
-
-        let dr_header_bytes = bincode::serialize(&dr.header)
-            .map_err(|e| Error::Serialize(e.to_string()))?;
+        // --- Write order: data → meta → idx -----------------------------
+        let dr_header_bytes =
+            bincode::serialize(&dr.header).map_err(|e| Error::Serialize(e.to_string()))?;
         debug_assert_eq!(dr_header_bytes.len(), 20);
         self.data_buf.extend_from_slice(&dr_header_bytes);
         self.data_buf.extend_from_slice(&dr.data);
         self.data_buf.extend_from_slice(&dr.padding);
         self.data_offset += dr.size() as u64;
+
+        self.meta_buf.extend_from_slice(&mr_json);
+        self.meta_buf.extend_from_slice(b"\n");
+        self.meta_offset += mr_line_len as u64;
+
+        let ir_bytes = bincode::serialize(&ir).map_err(|e| Error::Serialize(e.to_string()))?;
+        debug_assert_eq!(ir_bytes.len(), 28);
+        self.idx_buf.extend_from_slice(&ir_bytes);
 
         self.total_raw_bytes += dr.data.len();
 
@@ -249,37 +297,8 @@ impl S3Writer {
         }
         self.closed = true;
 
-        let client = match self.s3_client.take() {
-            Some(c) => c,
-            None => return Ok(()),
-        };
-
-        let sid = self.file_stack_id;
-        let data_buf = std::mem::take(&mut self.data_buf);
-        let idx_buf = std::mem::take(&mut self.idx_buf);
-        let meta_buf = std::mem::take(&mut self.meta_buf);
-
-        let objects: [(&str, Vec<u8>); 3] =
-            [("data", data_buf), ("idx", idx_buf), ("meta", meta_buf)];
-
-        for (suffix, buf) in objects {
-            let key = if self.prefix.is_empty() {
-                format!("0x{:04x}.{}", sid, suffix)
-            } else {
-                format!("{}/0x{:04x}.{}", self.prefix, sid, suffix)
-            };
-            client
-                .put_object()
-                .bucket(&self.bucket)
-                .key(&key)
-                .body(ByteStream::from(buf))
-                .send()
-                .await
-                .map_err(|e| {
-                    Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                })?;
-        }
-
+        self.upload_current_stack().await?;
+        self.s3_client.take();
         Ok(())
     }
 }
@@ -292,8 +311,8 @@ impl S3Writer {
 ///
 /// Respects `BYTESTACK_S3_ENDPOINT` for MinIO-compatible stores.
 async fn create_s3_client() -> aws_sdk_s3::Client {
-    use aws_sdk_s3::config::{BehaviorVersion, Region};
     use aws_credential_types::Credentials;
+    use aws_sdk_s3::config::{BehaviorVersion, Region};
 
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
@@ -312,9 +331,7 @@ async fn create_s3_client() -> aws_sdk_s3::Client {
     }
 
     if let Ok(endpoint) = std::env::var("BYTESTACK_S3_ENDPOINT") {
-        config_builder = config_builder
-            .endpoint_url(endpoint)
-            .force_path_style(true);
+        config_builder = config_builder.endpoint_url(endpoint).force_path_style(true);
     }
 
     let config = config_builder.build();

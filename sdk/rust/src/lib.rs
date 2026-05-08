@@ -47,5 +47,44 @@ pub mod error;
 pub mod writer;
 pub mod writer_s3;
 
+use error::Result;
 pub use writer::LocalWriter;
 pub use writer_s3::S3Writer;
+
+pub enum Writer {
+    Local(LocalWriter),
+    S3(S3Writer),
+}
+
+impl Writer {
+    pub async fn put(
+        &mut self,
+        data: Vec<u8>,
+        filename: impl Into<String>,
+        extra_meta: Option<Vec<u8>>,
+    ) -> Result<String> {
+        let filename = filename.into();
+        match self {
+            Writer::Local(writer) => writer.put(data, filename, extra_meta).await,
+            Writer::S3(writer) => writer.put(data, filename, extra_meta).await,
+        }
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        match self {
+            Writer::Local(writer) => writer.close().await,
+            Writer::S3(writer) => writer.close().await,
+        }
+    }
+}
+
+pub async fn open_writer(path: &str, controller: Option<&str>) -> Result<Writer> {
+    if path.starts_with("s3://") {
+        let controller = controller.ok_or_else(|| {
+            error::Error::Internal("s3 writers require a controller address".to_string())
+        })?;
+        return Ok(Writer::S3(S3Writer::open(path, controller).await?));
+    }
+
+    Ok(Writer::Local(LocalWriter::open(path, controller).await?))
+}

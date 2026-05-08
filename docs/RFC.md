@@ -264,7 +264,7 @@ Each data payload MUST be checksummed with **CRC-32C (Castagnoli)**, polynomial 
 
 ### 6.3 Write Atomicity
 
-1. The `.data` file MUST be fully written and flushed to storage **before** any IndexRecord is written to `.idx`.
+1. The `.data` payload for a record MUST be fully written and flushed to the active storage backend **before** the corresponding IndexRecord is persisted to `.idx`.
 2. The `.meta` file write order relative to `.idx` is not critical — both reference each other via offsets and cookies, so consistency is enforced by post-read validation.
 
 ### 6.4 Data File Size Limit
@@ -272,7 +272,9 @@ Each data payload MUST be checksummed with **CRC-32C (Castagnoli)**, polynomial 
 The default maximum capacity of a single `.data` file is **5 GiB** (5 × 1024³ bytes). When the next `put()` would exceed this threshold:
 
 1. `close()` the current stack (flush all three files).
-2. Request a new `stack_id` from the Controller.
+2. Allocate a new `stack_id`:
+   - controller mode: request a new `stack_id` from the Controller
+   - local mode: generate a fresh timestamp-based file `stack_id`
 3. Open a new stack and continue writing.
 
 This limit SHOULD be configurable at the SDK level.
@@ -356,10 +358,11 @@ Every language SDK MUST expose these three core functions.
 **Lifecycle:**
 1. Generate random `cookie`.
 2. Compute CRC-32C of `data`.
-3. Serialize and write `IndexRecord` → `.idx`
-4. Serialize and write `MetaRecord` (JSON + `\n`) → `.meta`
-5. Serialize and write `DataRecordHeader` + `data` + padding → `.data`
-6. Return `index_id`.
+3. Serialize and write `DataRecordHeader` + `data` + padding → `.data`
+4. Flush `.data` to the active backend.
+5. Serialize and write `MetaRecord` (JSON + `\n`) → `.meta`
+6. Serialize and write `IndexRecord` → `.idx`
+7. Return `index_id`.
 
 ### 8.3 `close()`
 
@@ -393,7 +396,7 @@ This migration step is **not** handled by the writer SDK; it is the caller's res
 
 | Operation | SDK Role | Notes |
 |-----------|----------|-------|
-| Write (`.data`) | SDK writes sequentially via OpendAL writer | Append semantics; SDK MUST flush before updating `.idx` |
+| Write (`.data`) | SDK writes sequentially via storage writer | Append semantics; SDK MUST flush before publishing `.idx` |
 | Write (`.idx`)  | SDK appends IndexRecords | Small, fixed-size writes |
 | Write (`.meta`) | SDK appends JSON lines | One line per record |
 | Read (single)   | SDK can read for sampling/verification | For production, redirect to bsserver |
@@ -401,6 +404,8 @@ This migration step is **not** handled by the writer SDK; it is the caller's res
 | Range scan      | **bsserver only** | High latency / cost via S3 |
 
 **Rule:** SDKs are responsible for writing and lightweight point-reads (e.g., integrity checks). All bulk or production read workloads MUST be routed through **bsserver**, which provides optimized gRPC fetch endpoints (`fetch_one`, `fetch_batch`, `range_from`).
+
+For S3-compatible backends, an SDK MAY buffer record writes client-side until `close()` as long as object publication order preserves the atomicity rule: `.data` MUST become visible before `.idx`, and `.meta` MAY be published before or after `.idx`.
 
 ---
 
@@ -449,14 +454,15 @@ put(data, filename, extra_meta)
 │
 ├─ 1. Generate random cookie (u32)
 ├─ 2. Compute CRC-32C of data
-├─ 3. Build IndexRecord, write to .idx        ← immediate
-├─ 4. Build MetaRecord, write to .meta        ← immediate
-├─ 5. Build DataRecord, write to .data        ← delayed flush
+├─ 3. Build DataRecord, write to .data
+├─ 4. Flush .data to active backend
+├─ 5. Build MetaRecord, write to .meta
+├─ 6. Build IndexRecord, write to .idx
 │
 └─ return "{stack_id},{offset:x}{cookie:08x}"
 ```
 
-**Flush order:** .data → .idx (enforced by atomically advancing `data_offset` only after the DataRecord is confirmed written).
+**Flush order:** .data → (.meta optional) → .idx
 
 ---
 

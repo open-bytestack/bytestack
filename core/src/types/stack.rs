@@ -1,4 +1,3 @@
-
 //! stack describe a bytestack abostractly
 use tabled::Tabled;
 

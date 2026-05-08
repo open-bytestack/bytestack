@@ -22,9 +22,25 @@ class SerializeError(Error):
     """Serialization failure."""
 
 
+class MagicMismatch(Error):
+    """Magic number validation failure."""
+
+
+class ChecksumMismatch(Error):
+    """CRC-32C mismatch."""
+
+
+class StackIncomplete(Error):
+    """One or more stack files are missing."""
+
+
 class ControllerError(Error):
     """Controller gRPC error (connection or allocation)."""
 
 
-class InvalidStack(Error):
-    """Invalid or missing stack files in the directory."""
+class Internal(Error):
+    """Unexpected internal condition."""
+
+
+class InvalidStack(StackIncomplete):
+    """Backward-compatible alias for incomplete stack errors."""

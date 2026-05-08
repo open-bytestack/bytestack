@@ -6,12 +6,16 @@ import "fmt"
 type ErrorKind string
 
 const (
-	KindStackClosed  ErrorKind = "stack-closed"
-	KindStackFull    ErrorKind = "stack-full"
-	KindController   ErrorKind = "controller"
-	KindSerialize    ErrorKind = "serialize"
-	KindInvalidStack ErrorKind = "invalid-stack"
-	KindIO           ErrorKind = "io"
+	KindStackClosed      ErrorKind = "stack-closed"
+	KindStackFull        ErrorKind = "stack-full"
+	KindController       ErrorKind = "controller"
+	KindSerialize        ErrorKind = "serialize"
+	KindInvalidStack     ErrorKind = "invalid-stack"
+	KindStackIncomplete  ErrorKind = "stack-incomplete"
+	KindMagicMismatch    ErrorKind = "magic-mismatch"
+	KindChecksumMismatch ErrorKind = "checksum-mismatch"
+	KindInternal         ErrorKind = "internal"
+	KindIO               ErrorKind = "io"
 )
 
 // Error is a structured SDK error.
@@ -61,3 +65,47 @@ func (e *ControllerError) Error() string {
 }
 
 func (e *ControllerError) Unwrap() error { return e.Err }
+
+type MagicMismatchError struct {
+	Expected uint64
+	Got      uint64
+	Context  string
+}
+
+func (e *MagicMismatchError) Error() string {
+	return fmt.Sprintf("magic mismatch in %s: expected %d, got %d", e.Context, e.Expected, e.Got)
+}
+
+type ChecksumMismatchError struct {
+	Expected uint32
+	Actual   uint32
+}
+
+func (e *ChecksumMismatchError) Error() string {
+	return fmt.Sprintf("checksum mismatch: expected %#x, got %#x", e.Expected, e.Actual)
+}
+
+type StackIncompleteError struct {
+	Message string
+}
+
+func (e *StackIncompleteError) Error() string {
+	if e.Message == "" {
+		return "stack incomplete"
+	}
+	return "stack incomplete: " + e.Message
+}
+
+type InternalError struct {
+	Message string
+	Err     error
+}
+
+func (e *InternalError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("internal error: %s: %v", e.Message, e.Err)
+	}
+	return "internal error: " + e.Message
+}
+
+func (e *InternalError) Unwrap() error { return e.Err }

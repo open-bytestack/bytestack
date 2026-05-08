@@ -5,7 +5,7 @@ Polynomial: 0x1EDC6F41 (CRC-32/ISCSI).
 
 from __future__ import annotations
 
-_POLY = 0x1EDC6F41
+_POLY = 0x82F63B78
 _TABLE: list[int] | None = None
 
 

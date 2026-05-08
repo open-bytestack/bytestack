@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import BinaryIO, Optional
 
 from ._crc32c import crc32c
-from .error import ControllerError, Error, SerializeError, StackClosed, StackFull
+from .error import ControllerError, StackClosed, StackFull
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -80,11 +80,12 @@ class LocalWriter:
     def __init__(self) -> None:
         # Set by open().
         self._dir: str = ""
+        self._controller: Optional[str] = None
         self._file_stack_id: int = 0
         self._header_stack_id: int = 0
-        self._data_file: Optional[typing.BinaryIO] = None
-        self._idx_file: Optional[typing.BinaryIO] = None
-        self._meta_file: Optional[typing.BinaryIO] = None
+        self._data_file: Optional[BinaryIO] = None
+        self._idx_file: Optional[BinaryIO] = None
+        self._meta_file: Optional[BinaryIO] = None
         self._data_offset: int = DATA_HEADER_SIZE
         self._meta_offset: int = 0
         self._total_raw_bytes: int = 0
@@ -113,48 +114,55 @@ class LocalWriter:
         """
         w = cls()
         w._dir = str(path)
+        w._controller = controller
         os.makedirs(w._dir, exist_ok=True)
-
-        # Resolve stack ID ---------------------------------------------------
-        if controller is not None:
-            w._header_stack_id = w._file_stack_id = _next_stack_id(controller)
-        else:
-            w._file_stack_id = int(time.time())
-            w._header_stack_id = LOCAL_STACK_ID
-
         w._max_data_bytes = MAX_DATA_BYTES
+        w._open_stack()
+        return w
 
-        data_path = os.path.join(w._dir, _format_path(w._file_stack_id, "data"))
-        idx_path = os.path.join(w._dir, _format_path(w._file_stack_id, "idx"))
-        meta_path = os.path.join(w._dir, _format_path(w._file_stack_id, "meta"))
+    def _allocate_stack_ids(self) -> tuple[int, int]:
+        if self._controller is not None:
+            sid = _next_stack_id(self._controller)
+            return sid, sid
 
-        w._data_file = open(data_path, "wb")
-        w._idx_file = open(idx_path, "wb")
-        w._meta_file = open(meta_path, "wb")
+        sid = int(time.time())
+        while os.path.exists(os.path.join(self._dir, _format_path(sid, "data"))):
+            sid += 1
+        return sid, LOCAL_STACK_ID
 
-        # --- Magic headers --------------------------------------------------
+    def _open_stack(self) -> None:
+        self._file_stack_id, self._header_stack_id = self._allocate_stack_ids()
+        self._data_offset = DATA_HEADER_SIZE
+        self._total_raw_bytes = 0
 
-        # Data file: 16-byte magic header + 4080 bytes zero padding.
-        dh = struct.pack(_DATA_MAGIC_FMT, DATA_MAGIC, w._header_stack_id)
+        data_path = os.path.join(self._dir, _format_path(self._file_stack_id, "data"))
+        idx_path = os.path.join(self._dir, _format_path(self._file_stack_id, "idx"))
+        meta_path = os.path.join(self._dir, _format_path(self._file_stack_id, "meta"))
+
+        self._data_file = open(data_path, "xb")
+        self._idx_file = open(idx_path, "xb")
+        self._meta_file = open(meta_path, "xb")
+
+        dh = struct.pack(_DATA_MAGIC_FMT, DATA_MAGIC, self._header_stack_id)
         assert len(dh) == 16
-        w._data_file.write(dh)
-        w._data_file.write(b"\x00" * (DATA_HEADER_SIZE - 16))
+        self._data_file.write(dh)
+        self._data_file.write(b"\x00" * (DATA_HEADER_SIZE - 16))
 
-        # Index file: 16-byte magic header.
-        ih = struct.pack(_INDEX_MAGIC_FMT, INDEX_MAGIC, w._header_stack_id)
+        ih = struct.pack(_INDEX_MAGIC_FMT, INDEX_MAGIC, self._header_stack_id)
         assert len(ih) == 16
-        w._idx_file.write(ih)
+        self._idx_file.write(ih)
 
-        # Meta file: JSON magic header + newline.
         mh = json.dumps(
-            {"meta_magic_number": META_MAGIC, "stack_id": w._header_stack_id},
+            {"meta_magic_number": META_MAGIC, "stack_id": self._header_stack_id},
             separators=(",", ":"),
         )
         mh_line = (mh + "\n").encode("utf-8")
-        w._meta_file.write(mh_line)
-        w._meta_offset = len(mh_line)
+        self._meta_file.write(mh_line)
+        self._meta_offset = len(mh_line)
 
-        return w
+    def _rotate_stack(self) -> None:
+        self.close()
+        self._open_stack()
 
     # -- properties ----------------------------------------------------------
 
@@ -223,9 +231,17 @@ class LocalWriter:
             raise StackClosed()
 
         # --- Size guard -----------------------------------------------------
+        if len(data) > self._max_data_bytes:
+            raise StackFull(len(data), self._max_data_bytes)
+
         new_total = self._total_raw_bytes + len(data)
         if new_total > self._max_data_bytes:
-            raise StackFull(new_total, self._max_data_bytes)
+            self._rotate_stack()
+            data_f = self._data_file
+            idx_f = self._idx_file
+            meta_f = self._meta_file
+            if data_f is None or idx_f is None or meta_f is None:
+                raise StackClosed()
 
         # --- Build records --------------------------------------------------
         cookie = secrets.randbits(32)
@@ -275,15 +291,23 @@ class LocalWriter:
         raw_bytes = DATA_RECORD_HEADER_SIZE + len(data)
         padding_size = (ALIGNMENT - (raw_bytes % ALIGNMENT)) % ALIGNMENT
 
-        # --- Write order: index → meta → data -----------------------------
-        idx_f.write(ir_bytes)
-        meta_f.write(mr_line)
-        self._meta_offset += mr_line_len
+        # --- Write order: data → flush → meta → idx -----------------------
         data_f.write(dr_header)
         data_f.write(data)
         if padding_size:
             data_f.write(b"\x00" * padding_size)
+        data_f.flush()
+        os.fsync(data_f.fileno())
         self._data_offset += raw_bytes + padding_size
+
+        meta_f.write(mr_line)
+        meta_f.flush()
+        os.fsync(meta_f.fileno())
+        self._meta_offset += mr_line_len
+
+        idx_f.write(ir_bytes)
+        idx_f.flush()
+        os.fsync(idx_f.fileno())
 
         self._total_raw_bytes += len(data)
         return index_id

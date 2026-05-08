@@ -59,17 +59,17 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	Alignment           = 4096
-	DataMagic           = 47494638
-	IndexMagic          = 5201314
-	MetaMagic           = 1314920
-	RecordMagicStart    = 257758
-	RecordMagicEnd      = 857752
-	DataHeaderSize      = 4096
-	DataRecordHeaderLen = 20
-	IndexRecordLen      = 28
-	LocalStackID uint64 = 0xFFFF_FFFF_FFFF_FFFF
-	DefaultMaxDataBytes = 5 * 1024 * 1024 * 1024 // 5 GiB
+	Alignment                  = 4096
+	DataMagic                  = 47494638
+	IndexMagic                 = 5201314
+	MetaMagic                  = 1314920
+	RecordMagicStart           = 257758
+	RecordMagicEnd             = 857752
+	DataHeaderSize             = 4096
+	DataRecordHeaderLen        = 20
+	IndexRecordLen             = 28
+	LocalStackID        uint64 = 0xFFFF_FFFF_FFFF_FFFF
+	DefaultMaxDataBytes        = 5 * 1024 * 1024 * 1024 // 5 GiB
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -123,6 +123,10 @@ type stackFileWriter interface {
 	io.Closer
 }
 
+type stackFileSyncer interface {
+	Sync() error
+}
+
 // stackWriterFactory creates stackFileWriter instances for a given
 // filename suffix (e.g. "0x{id}.data").
 type stackWriterFactory interface {
@@ -142,17 +146,19 @@ type stackWriterFactory interface {
 //	w.Close()
 //	// w.Put(...) returns ErrStackClosed.
 type Writer struct {
-	location      string // original location string
-	fileStackID   uint64
-	headerStackID uint64
-	dataFile      stackFileWriter
-	idxFile       stackFileWriter
-	metaFile      stackFileWriter
-	dataOffset    uint64
-	metaOffset    uint64
-	totalRawBytes int
-	maxDataBytes  int
-	closed        bool
+	location       string // original location string
+	factory        stackWriterFactory
+	controllerAddr string
+	fileStackID    uint64
+	headerStackID  uint64
+	dataFile       stackFileWriter
+	idxFile        stackFileWriter
+	metaFile       stackFileWriter
+	dataOffset     uint64
+	metaOffset     uint64
+	totalRawBytes  int
+	maxDataBytes   int
+	closed         bool
 }
 
 // LocalWriter is an alias for Writer for backward compatibility.
@@ -204,6 +210,10 @@ func Open(location string, controllerAddr ...string) (*Writer, error) {
 	return newWriter(location, factory, addr)
 }
 
+func OpenWriter(location string, controllerAddr ...string) (*Writer, error) {
+	return Open(location, controllerAddr...)
+}
+
 // parseLocation extracts scheme and path from a location string.
 func parseLocation(location string) (scheme, path string, err error) {
 	if strings.HasPrefix(location, "file://") {
@@ -233,74 +243,123 @@ func parseS3Location(s3path string) (bucket, prefix string) {
 // controller address.
 func newWriter(location string, factory stackWriterFactory, controllerAddr string) (*Writer, error) {
 	w := &Writer{
-		location:     location,
-		maxDataBytes: DefaultMaxDataBytes,
+		location:       location,
+		factory:        factory,
+		controllerAddr: controllerAddr,
+		maxDataBytes:   DefaultMaxDataBytes,
 	}
+	return w, w.openStack()
+}
 
-	// Resolve stack ID -------------------------------------------------------
-	if controllerAddr != "" {
-		sid, err := nextStackID(controllerAddr)
+func (w *Writer) resolveStackIDs() (uint64, uint64, error) {
+	if w.controllerAddr != "" {
+		sid, err := nextStackID(w.controllerAddr)
 		if err != nil {
-			return nil, err
+			return 0, 0, err
 		}
-		w.fileStackID = sid
-		w.headerStackID = sid
-	} else {
-		w.fileStackID = uint64(time.Now().Unix())
-		w.headerStackID = LocalStackID
+		return sid, sid, nil
 	}
 
-	// Create files via factory -----------------------------------------------
-	var err error
-	w.dataFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.data", w.fileStackID))
-	if err != nil {
-		return nil, fmt.Errorf("create data: %w", err)
+	sid := uint64(time.Now().Unix())
+	if localFactory, ok := w.factory.(*localWriterFactory); ok {
+		for {
+			path := filepath.Join(localFactory.dir, fmt.Sprintf("0x%04x.data", sid))
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				break
+			}
+			sid++
+		}
 	}
-	w.idxFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.idx", w.fileStackID))
+	return sid, LocalStackID, nil
+}
+
+func (w *Writer) openStack() error {
+	fileStackID, headerStackID, err := w.resolveStackIDs()
 	if err != nil {
-		return nil, fmt.Errorf("create idx: %w", err)
-	}
-	w.metaFile, err = factory.CreateWriter(fmt.Sprintf("0x%04x.meta", w.fileStackID))
-	if err != nil {
-		return nil, fmt.Errorf("create meta: %w", err)
+		return err
 	}
 
-	// --- Write magic headers -----------------------------------------------
+	dataFile, err := w.factory.CreateWriter(fmt.Sprintf("0x%04x.data", fileStackID))
+	if err != nil {
+		return fmt.Errorf("create data: %w", err)
+	}
+	idxFile, err := w.factory.CreateWriter(fmt.Sprintf("0x%04x.idx", fileStackID))
+	if err != nil {
+		dataFile.Close()
+		return fmt.Errorf("create idx: %w", err)
+	}
+	metaFile, err := w.factory.CreateWriter(fmt.Sprintf("0x%04x.meta", fileStackID))
+	if err != nil {
+		idxFile.Close()
+		dataFile.Close()
+		return fmt.Errorf("create meta: %w", err)
+	}
 
-	// Data file: 16-byte magic header + 4080 zero padding.
+	w.fileStackID = fileStackID
+	w.headerStackID = headerStackID
+	w.dataFile = dataFile
+	w.idxFile = idxFile
+	w.metaFile = metaFile
+	w.dataOffset = DataHeaderSize
+	w.totalRawBytes = 0
+
 	var dh [16]byte
 	binary.LittleEndian.PutUint64(dh[0:8], DataMagic)
 	binary.LittleEndian.PutUint64(dh[8:16], w.headerStackID)
 	if _, err := w.dataFile.Write(dh[:]); err != nil {
-		return nil, err
+		return err
 	}
 	zp := make([]byte, DataHeaderSize-16)
 	if _, err := w.dataFile.Write(zp); err != nil {
-		return nil, err
+		return err
 	}
 
-	// Index file: 16-byte magic header.
 	var ih [16]byte
 	binary.LittleEndian.PutUint64(ih[0:8], IndexMagic)
 	binary.LittleEndian.PutUint64(ih[8:16], w.headerStackID)
 	if _, err := w.idxFile.Write(ih[:]); err != nil {
-		return nil, err
+		return err
 	}
 
-	// Meta file: JSON magic header + newline.
 	mh, _ := json.Marshal(metaMagicHeader{
 		MetaMagicNumber: MetaMagic,
 		StackID:         w.headerStackID,
 	})
 	mhLine := append(mh, '\n')
 	if _, err := w.metaFile.Write(mhLine); err != nil {
-		return nil, err
+		return err
 	}
-
-	w.dataOffset = DataHeaderSize
 	w.metaOffset = uint64(len(mhLine))
+	return nil
+}
 
-	return w, nil
+func syncWriter(w stackFileWriter) error {
+	if syncer, ok := w.(stackFileSyncer); ok {
+		return syncer.Sync()
+	}
+	return nil
+}
+
+func (w *Writer) rotate() error {
+	if err := w.closeCurrentStack(); err != nil {
+		return err
+	}
+	return w.openStack()
+}
+
+func (w *Writer) closeCurrentStack() error {
+	for _, f := range []stackFileWriter{w.dataFile, w.metaFile, w.idxFile} {
+		if f == nil {
+			continue
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close: %w", err)
+		}
+	}
+	w.dataFile = nil
+	w.metaFile = nil
+	w.idxFile = nil
+	return nil
 }
 
 // StackID returns the stack identifier used for file naming
@@ -331,9 +390,15 @@ func (w *Writer) Put(data []byte, filename string, extraMeta []byte) (string, er
 	}
 
 	// --- Size guard --------------------------------------------------------
+	if len(data) > w.maxDataBytes {
+		return "", &StackFullError{Current: len(data), MaxSize: w.maxDataBytes}
+	}
+
 	newTotal := w.totalRawBytes + len(data)
 	if newTotal > w.maxDataBytes {
-		return "", &StackFullError{Current: newTotal, MaxSize: w.maxDataBytes}
+		if err := w.rotate(); err != nil {
+			return "", err
+		}
 	}
 
 	// --- Build records -----------------------------------------------------
@@ -390,15 +455,7 @@ func (w *Writer) Put(data []byte, filename string, extraMeta []byte) (string, er
 	rawSz := DataRecordHeaderLen + len(data)
 	padSz := (Alignment - (rawSz % Alignment)) % Alignment
 
-	// --- Write order: index -> meta -> data --------------------------------
-	if _, err := w.idxFile.Write(ir); err != nil {
-		return "", fmt.Errorf("write idx: %w", err)
-	}
-	if _, err := w.metaFile.Write(mrLine); err != nil {
-		return "", fmt.Errorf("write meta: %w", err)
-	}
-	w.metaOffset += uint64(mrLineLen)
-
+	// --- Write order: data -> meta -> idx ----------------------------------
 	if _, err := w.dataFile.Write(drHdr); err != nil {
 		return "", fmt.Errorf("write data hdr: %w", err)
 	}
@@ -410,7 +467,25 @@ func (w *Writer) Put(data []byte, filename string, extraMeta []byte) (string, er
 			return "", fmt.Errorf("write padding: %w", err)
 		}
 	}
+	if err := syncWriter(w.dataFile); err != nil {
+		return "", fmt.Errorf("sync data: %w", err)
+	}
 	w.dataOffset += uint64(rawSz + padSz)
+
+	if _, err := w.metaFile.Write(mrLine); err != nil {
+		return "", fmt.Errorf("write meta: %w", err)
+	}
+	if err := syncWriter(w.metaFile); err != nil {
+		return "", fmt.Errorf("sync meta: %w", err)
+	}
+	w.metaOffset += uint64(mrLineLen)
+
+	if _, err := w.idxFile.Write(ir); err != nil {
+		return "", fmt.Errorf("write idx: %w", err)
+	}
+	if err := syncWriter(w.idxFile); err != nil {
+		return "", fmt.Errorf("sync idx: %w", err)
+	}
 
 	w.totalRawBytes += len(data)
 	return indexID, nil
@@ -425,16 +500,7 @@ func (w *Writer) Close() error {
 		return nil
 	}
 	w.closed = true
-
-	for _, f := range []stackFileWriter{w.dataFile, w.idxFile, w.metaFile} {
-		if f == nil {
-			continue
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("close: %w", err)
-		}
-	}
-	return nil
+	return w.closeCurrentStack()
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +513,7 @@ type localWriterFactory struct {
 
 func (f *localWriterFactory) CreateWriter(filename string) (stackFileWriter, error) {
 	path := filepath.Join(f.dir, filename)
-	file, err := os.Create(path)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -462,10 +528,11 @@ func (w *localFileWriter) Write(p []byte) (int, error) {
 	return w.file.Write(p)
 }
 
+func (w *localFileWriter) Sync() error {
+	return w.file.Sync()
+}
+
 func (w *localFileWriter) Close() error {
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
 	return w.file.Close()
 }
 

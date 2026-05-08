@@ -34,10 +34,10 @@ func tmpDir(t *testing.T) string {
 
 func TestParseLocation(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantScheme  string
-		wantPath    string
-		wantErr     bool
+		input      string
+		wantScheme string
+		wantPath   string
+		wantErr    bool
 	}{
 		{"/tmp/mystack", "file", "/tmp/mystack", false},
 		{"file:///tmp/mystack", "file", "/tmp/mystack", false},
@@ -95,7 +95,7 @@ func TestParseS3Location(t *testing.T) {
 
 func TestOpenFilePrefix(t *testing.T) {
 	dir := tmpDir(t)
-	w, err := Open("file://" + dir)
+	w, err := OpenWriter("file://" + dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,9 +252,18 @@ func TestSizeLimitEnforced(t *testing.T) {
 	if _, err := w.Put(make([]byte, 90), "large.txt", nil); err != nil {
 		t.Fatal(err)
 	}
-	_, err = w.Put(make([]byte, 20), "overflow.txt", nil)
+	firstStackID := w.StackID()
+
+	if _, err := w.Put(make([]byte, 20), "overflow.txt", nil); err != nil {
+		t.Fatalf("expected automatic rotation, got %v", err)
+	}
+	if w.StackID() == firstStackID {
+		t.Fatalf("expected stack rotation, stack id stayed at %d", firstStackID)
+	}
+
+	_, err = w.Put(make([]byte, 200), "too-large.txt", nil)
 	if !IsStackFull(err) {
-		t.Fatalf("expected StackFullError, got %v", err)
+		t.Fatalf("expected StackFullError for oversized record, got %v", err)
 	}
 	w.Close()
 }

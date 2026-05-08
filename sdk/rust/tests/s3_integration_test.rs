@@ -26,8 +26,7 @@ struct E2eFixture {
 
 impl E2eFixture {
     fn start() -> Self {
-        let binary =
-            std::env::var("E2E_BIN").unwrap_or_else(|_| "/tmp/e2e-server".to_string());
+        let binary = std::env::var("E2E_BIN").unwrap_or_else(|_| "/tmp/e2e-server".to_string());
 
         let mut child = Command::new(&binary)
             .stdout(Stdio::piped())
@@ -135,12 +134,7 @@ async fn test_s3_writer_put_and_close() {
     // --- Verify objects exist ----------------------------------------------
     for suffix in ["data", "idx", "meta"] {
         let key = format!("stacks/0x{sid:04x}.{suffix}");
-        let result = client
-            .head_object()
-            .bucket(BUCKET)
-            .key(&key)
-            .send()
-            .await;
+        let result = client.head_object().bucket(BUCKET).key(&key).send().await;
         assert!(
             result.is_ok(),
             "object s3://{}/{} not found: {:?}",
