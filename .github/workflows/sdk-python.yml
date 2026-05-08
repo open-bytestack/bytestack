@@ -1,0 +1,80 @@
+name: SDK Python
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-python.yml"
+      - "go.mod"
+      - "go.sum"
+      - "sdk/python/**"
+      - "sdk/golang/e2e/**"
+      - "proto/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-python.yml"
+      - "go.mod"
+      - "go.sum"
+      - "sdk/python/**"
+      - "sdk/golang/e2e/**"
+      - "proto/**"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            sdk/python/requirements.txt
+            sdk/python/setup.py
+
+      - name: Install Python SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sdk/python/requirements.txt
+          python -m pip install -e sdk/python
+
+      - name: Run Python SDK unit tests
+        run: python -m pytest -v sdk/python/tests/test_writer.py
+
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            sdk/python/requirements.txt
+            sdk/python/setup.py
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Python SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sdk/python/requirements.txt
+          python -m pip install -e sdk/python
+
+      - name: Build e2e server
+        run: go build -o /tmp/e2e-server ./sdk/golang/e2e/cmd/e2e
+
+      - name: Run Python SDK S3 integration test
+        env:
+          E2E_BIN: /tmp/e2e-server
+        run: python -m pytest -v sdk/python/tests/test_s3_writer.py
