@@ -1,0 +1,51 @@
+name: Proto Verify
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/proto-verify.yml"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "proto/**"
+      - "hack/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/proto-verify.yml"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "proto/**"
+      - "hack/**"
+
+jobs:
+  verify-generated:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate proto outputs
+        run: make proto
+
+      - name: Verify generated files are up to date
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          untracked="$(git ls-files --others --exclude-standard -- proto/src)"
+          if [[ -n "${untracked}" ]]; then
+            echo "Untracked generated files detected:"
+            echo "${untracked}"
+            exit 1
+          fi
+
+          if ! git diff --quiet -- proto/src; then
+            echo "Generated proto files are out of date. Please run 'make proto' and commit the results."
+            git diff -- proto/src
+            exit 1
+          fi

@@ -110,8 +110,8 @@ impl PreLoadState {
 /// Generated client implementations.
 pub mod controller_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct ControllerClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -155,8 +155,9 @@ pub mod controller_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + Send + Sync,
         {
             ControllerClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -196,14 +197,19 @@ pub mod controller_client {
             &mut self,
             request: impl tonic::IntoRequest<()>,
         ) -> std::result::Result<tonic::Response<super::StackId>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/controller.Controller/NextStackID");
+            let path = http::uri::PathAndQuery::from_static(
+                "/controller.Controller/NextStackID",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("controller.Controller", "NextStackID"));
@@ -214,20 +220,22 @@ pub mod controller_client {
             &mut self,
             request: impl tonic::IntoRequest<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/controller.Controller/RegisterStackSource");
+            let path = http::uri::PathAndQuery::from_static(
+                "/controller.Controller/RegisterStackSource",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "controller.Controller",
-                "RegisterStackSource",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("controller.Controller", "RegisterStackSource"));
             self.inner.unary(req, path, codec).await
         }
         /// DeRegisterStackSource deregister source from stack_id.
@@ -235,21 +243,24 @@ pub mod controller_client {
             &mut self,
             request: impl tonic::IntoRequest<super::StackSource>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/controller.Controller/DeRegisterStackSource",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "controller.Controller",
-                "DeRegisterStackSource",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("controller.Controller", "DeRegisterStackSource"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// QueryRegisteredSource query registered source.
@@ -257,37 +268,47 @@ pub mod controller_client {
             &mut self,
             request: impl tonic::IntoRequest<super::StackId>,
         ) -> std::result::Result<tonic::Response<super::StackSource>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/controller.Controller/QueryRegisteredSource",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "controller.Controller",
-                "QueryRegisteredSource",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("controller.Controller", "QueryRegisteredSource"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// PreLoad help user to do preload or unpreload stack to bserver
         pub async fn pre_load(
             &mut self,
             request: impl tonic::IntoRequest<super::CallPreLoadReq>,
-        ) -> std::result::Result<tonic::Response<super::PreLoadAssignments>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::PreLoadAssignments>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/controller.Controller/PreLoad");
+            let path = http::uri::PathAndQuery::from_static(
+                "/controller.Controller/PreLoad",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("controller.Controller", "PreLoad"));
@@ -297,16 +318,23 @@ pub mod controller_client {
         pub async fn locate_stack(
             &mut self,
             request: impl tonic::IntoRequest<super::StackId>,
-        ) -> std::result::Result<tonic::Response<super::PreLoadAssignments>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::PreLoadAssignments>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/controller.Controller/LocateStack");
+            let path = http::uri::PathAndQuery::from_static(
+                "/controller.Controller/LocateStack",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("controller.Controller", "LocateStack"));
@@ -345,12 +373,18 @@ pub mod controller_server {
         async fn pre_load(
             &self,
             request: tonic::Request<super::CallPreLoadReq>,
-        ) -> std::result::Result<tonic::Response<super::PreLoadAssignments>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::PreLoadAssignments>,
+            tonic::Status,
+        >;
         /// LocateStack help user find where the stack placed.
         async fn locate_stack(
             &self,
             request: tonic::Request<super::StackId>,
-        ) -> std::result::Result<tonic::Response<super::PreLoadAssignments>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::PreLoadAssignments>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ControllerServer<T: Controller> {
@@ -375,7 +409,10 @@ pub mod controller_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -431,12 +468,18 @@ pub mod controller_server {
                 "/controller.Controller/NextStackID" => {
                     #[allow(non_camel_case_types)]
                     struct NextStackIDSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<()> for NextStackIDSvc<T> {
+                    impl<T: Controller> tonic::server::UnaryService<()>
+                    for NextStackIDSvc<T> {
                         type Response = super::StackId;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(&mut self, request: tonic::Request<()>) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).next_stack_id(request).await };
+                            let fut = async move {
+                                (*inner).next_stack_id(request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -466,15 +509,21 @@ pub mod controller_server {
                 "/controller.Controller/RegisterStackSource" => {
                     #[allow(non_camel_case_types)]
                     struct RegisterStackSourceSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<super::StackSource> for RegisterStackSourceSvc<T> {
+                    impl<T: Controller> tonic::server::UnaryService<super::StackSource>
+                    for RegisterStackSourceSvc<T> {
                         type Response = ();
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::StackSource>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).register_stack_source(request).await };
+                            let fut = async move {
+                                (*inner).register_stack_source(request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -505,17 +554,20 @@ pub mod controller_server {
                     #[allow(non_camel_case_types)]
                     struct DeRegisterStackSourceSvc<T: Controller>(pub Arc<T>);
                     impl<T: Controller> tonic::server::UnaryService<super::StackSource>
-                        for DeRegisterStackSourceSvc<T>
-                    {
+                    for DeRegisterStackSourceSvc<T> {
                         type Response = ();
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::StackSource>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { (*inner).de_register_stack_source(request).await };
+                            let fut = async move {
+                                (*inner).de_register_stack_source(request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -545,16 +597,21 @@ pub mod controller_server {
                 "/controller.Controller/QueryRegisteredSource" => {
                     #[allow(non_camel_case_types)]
                     struct QueryRegisteredSourceSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<super::StackId> for QueryRegisteredSourceSvc<T> {
+                    impl<T: Controller> tonic::server::UnaryService<super::StackId>
+                    for QueryRegisteredSourceSvc<T> {
                         type Response = super::StackSource;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::StackId>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { (*inner).query_registered_source(request).await };
+                            let fut = async move {
+                                (*inner).query_registered_source(request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -584,9 +641,15 @@ pub mod controller_server {
                 "/controller.Controller/PreLoad" => {
                     #[allow(non_camel_case_types)]
                     struct PreLoadSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<super::CallPreLoadReq> for PreLoadSvc<T> {
+                    impl<
+                        T: Controller,
+                    > tonic::server::UnaryService<super::CallPreLoadReq>
+                    for PreLoadSvc<T> {
                         type Response = super::PreLoadAssignments;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CallPreLoadReq>,
@@ -622,15 +685,21 @@ pub mod controller_server {
                 "/controller.Controller/LocateStack" => {
                     #[allow(non_camel_case_types)]
                     struct LocateStackSvc<T: Controller>(pub Arc<T>);
-                    impl<T: Controller> tonic::server::UnaryService<super::StackId> for LocateStackSvc<T> {
+                    impl<T: Controller> tonic::server::UnaryService<super::StackId>
+                    for LocateStackSvc<T> {
                         type Response = super::PreLoadAssignments;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::StackId>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).locate_stack(request).await };
+                            let fut = async move {
+                                (*inner).locate_stack(request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -657,14 +726,18 @@ pub mod controller_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    Ok(http::Response::builder()
-                        .status(200)
-                        .header("grpc-status", "12")
-                        .header("content-type", "application/grpc")
-                        .body(empty_body())
-                        .unwrap())
-                }),
+                _ => {
+                    Box::pin(async move {
+                        Ok(
+                            http::Response::builder()
+                                .status(200)
+                                .header("grpc-status", "12")
+                                .header("content-type", "application/grpc")
+                                .body(empty_body())
+                                .unwrap(),
+                        )
+                    })
+                }
             }
         }
     }

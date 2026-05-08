@@ -24,13 +24,14 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bturbo.proto\x12\x05turbo\"\x92\x01\n\x0bMaintainReq\x12\x30\n\x07secrets\x18\x01 \x03(\x0b\x32\x1f.turbo.MaintainReq.SecretsEntry\x12!\n\x05tasks\x18\x02 \x03(\x0b\x32\x12.turbo.PreLoadTask\x1a.\n\x0cSecretsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c:\x02\x38\x01\"H\n\x0bPreLoadTask\x12\x10\n\x08stack_id\x18\x01 \x01(\x04\x12\x12\n\nstack_size\x18\x02 \x01(\x04\x12\x13\n\x0bsource_path\x18\x03 \x03(\t\"`\n\x11PreLoadTaskStatus\x12\x10\n\x08stack_id\x18\x01 \x01(\x04\x12\x12\n\nstack_size\x18\x02 \x01(\x04\x12\x13\n\x0bloaded_size\x18\x03 \x01(\x04\x12\x10\n\x08last_err\x18\x04 \x01(\t\">\n\x0cMaintainResp\x12.\n\x0ctasks_status\x18\x01 \x03(\x0b\x32\x18.turbo.PreLoadTaskStatus2<\n\x05Turbo\x12\x33\n\x08Maintain\x12\x12.turbo.MaintainReq\x1a\x13.turbo.MaintainRespb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bturbo.proto\x12\x05turbo\"\x92\x01\n\x0bMaintainReq\x12\x30\n\x07secrets\x18\x01 \x03(\x0b\x32\x1f.turbo.MaintainReq.SecretsEntry\x12!\n\x05tasks\x18\x02 \x03(\x0b\x32\x12.turbo.PreLoadTask\x1a.\n\x0cSecretsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x0c:\x02\x38\x01\"H\n\x0bPreLoadTask\x12\x10\n\x08stack_id\x18\x01 \x01(\x04\x12\x12\n\nstack_size\x18\x02 \x01(\x04\x12\x13\n\x0bsource_path\x18\x03 \x03(\t\"`\n\x11PreLoadTaskStatus\x12\x10\n\x08stack_id\x18\x01 \x01(\x04\x12\x12\n\nstack_size\x18\x02 \x01(\x04\x12\x13\n\x0bloaded_size\x18\x03 \x01(\x04\x12\x10\n\x08last_err\x18\x04 \x01(\t\">\n\x0cMaintainResp\x12.\n\x0ctasks_status\x18\x01 \x03(\x0b\x32\x18.turbo.PreLoadTaskStatus2<\n\x05Turbo\x12\x33\n\x08Maintain\x12\x12.turbo.MaintainReq\x1a\x13.turbo.MaintainRespB;Z9github.com/open-bytestack/bytestack/proto/src/turbo;turbob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'turbo_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'Z9github.com/open-bytestack/bytestack/proto/src/turbo;turbo'
   _globals['_MAINTAINREQ_SECRETSENTRY']._loaded_options = None
   _globals['_MAINTAINREQ_SECRETSENTRY']._serialized_options = b'8\001'
   _globals['_MAINTAINREQ']._serialized_start=23
