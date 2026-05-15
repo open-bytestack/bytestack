@@ -1,0 +1,66 @@
+name: SDK Cross Validation
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-cross.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "go.mod"
+      - "go.sum"
+      - "core/**"
+      - "proto/**"
+      - "sdk/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sdk-cross.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "go.mod"
+      - "go.sum"
+      - "core/**"
+      - "proto/**"
+      - "sdk/**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  local-writer-compat:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            sdk/python/requirements.txt
+            sdk/python/setup.py
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install Python SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sdk/python/requirements.txt
+          python -m pip install -e sdk/python
+
+      - name: Run cross-SDK local writer validation
+        run: python -m pytest -v sdk/python/tests/test_cross_sdk_local_writer.py
